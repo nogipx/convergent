@@ -1,0 +1,21 @@
+name: convergent
+description: Convergent Replicated Data Types for Dart — composable building blocks for offline-first apps. Registers, sets, counters, maps that merge deterministically across replicas without a central coordinator.
+version: 0.3.0
+repository: https://github.com/nogipx/convergent.git
+
+topics:
+  - crdt
+  - replication
+  - offline-first
+  - distributed
+  - sync
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  fast_immutable_collections: ^11.0.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: any
