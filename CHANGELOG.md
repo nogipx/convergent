@@ -1,3 +1,62 @@
+## 0.4.0
+
+Performance overhaul of `Sequence`. Production trigger: a 23k-entry
+text-reconcile on dart2js (Obsidian plugin) was hanging the UI for
+77+ seconds. After this release the same workload runs in ~100ms — a
+~800× speedup at the diff-apply step, end-to-end O(N + K) where K is
+the size of the batch and N is the entry-map size.
+
+### Changed
+
+- `Sequence._chars` migrated from `IMap` (fast_immutable_collections)
+  to a native `Map<Hlc, SeqEntry<T>>` treated as immutable by
+  convention. The previous backing store advertised HAMT semantics
+  but was implemented as a chained delta on top of a base `Map`
+  with periodic auto-flush — its `add` was O(1) amortised but every
+  `values`/`entries` iteration walked the delta chain via
+  `Iterable.followedBy`, which on dart2js is a major const-factor
+  loss against V8's native hash table. The migration trades the
+  (unused in our access pattern) structural sharing for raw
+  iteration throughput. Benchmarks: dart2js iteration 17× faster,
+  build N=100k from 149s → 27ms, batch-join K=1000 from 3.1s → 19ms.
+- `Sequence.entries` now returns `Map<Hlc, SeqEntry<T>>` instead of
+  `IMap<Hlc, SeqEntry<T>>`. The map is the live internal storage and
+  must not be mutated by callers. Methods used by codecs and tests
+  (`.length`, `.values`, `.keys`, `.containsKey`, `.entries`) are
+  preserved by both types, so most call sites are unaffected.
+- `package:fast_immutable_collections` is no longer a dependency.
+
+### Added
+
+- `Sequence.applyOps(List<SeqOp<T>>, Hlc Function() nextHlc)` — batch
+  mutation entry point. One `Map.of` copy + one mutable working
+  visible list + a precomputed `hasRightChild` set turn what was K
+  independent `O(N log N)` mutations into a single `O(N + K)` batch.
+  Use for any multi-op write path: text-diff reconcile, bulk apply
+  of a remote delta, codec-side replay.
+- `SeqOp<T>` sealed class with `SeqOp.insert(int at, T value)` and
+  `SeqOp.removeAt(int at)` constructors. Ops are interpreted in
+  list order against the evolving visible projection — `insert(3,
+  …)` followed by `removeAt(2)` resolves the remove against the
+  post-insert indexing.
+- Memoisation of `Sequence._visible()`. Every getter that walks
+  visible order (`values`, `length`, `[]`, `_resolveInsertion`,
+  `_findLastVisible`, `_findFirstVisible`) now shares a single
+  cached list per Sequence instance. Repeated `.values` reads on
+  the same instance drop from `O(N log N)` per call to `O(1)`.
+
+### Migration
+
+- Switch any per-op write loop on a large `Sequence` to `applyOps`.
+  The per-op API (`insertAt` / `removeAt` / `append` / `prepend`)
+  still works for single mutations, but on a `Map`-backed Sequence
+  each one is `O(N)` (the entry map is cloned) — calling them
+  thousands of times in a row hits the same kind of quadratic blow-
+  up that `IMap.add` had via auto-flush.
+- If you relied on `Sequence.entries` returning an `IMap` (e.g. to
+  pass it to a function typed against `IMap`), wrap it with `.lock`
+  at the call site or change the receiver's type to `Map`.
+
 ## 0.3.0
 
 Three-phase upgrade aligning the package with the published Δ-state

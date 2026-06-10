@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MIT
 
-import 'package:fast_immutable_collections/fast_immutable_collections.dart';
-
 import 'crdt.dart';
 import 'dot_set.dart';
 import 'hlc.dart';
@@ -73,6 +71,34 @@ class SeqEntry<T> {
       'parent=$parent side=${side.name})';
 }
 
+/// One operation in a [Sequence.applyOps] batch.
+///
+/// Use [SeqOp.insert] for inserts and [SeqOp.removeAt] for removes.
+/// Ops are applied in list order; later ops see the index space
+/// produced by earlier ones in the same batch.
+sealed class SeqOp<T> {
+  const SeqOp();
+
+  /// Insert [value] at logical index [at]. The dot for the new entry
+  /// is minted from the `nextHlc` callback at apply time, so callers
+  /// don't need to allocate clocks ahead of the batch.
+  const factory SeqOp.insert(int at, T value) = SeqOpInsert<T>;
+
+  /// Remove the live entry at logical index [at].
+  const factory SeqOp.removeAt(int at) = SeqOpRemove<T>;
+}
+
+class SeqOpInsert<T> extends SeqOp<T> {
+  const SeqOpInsert(this.at, this.value);
+  final int at;
+  final T value;
+}
+
+class SeqOpRemove<T> extends SeqOp<T> {
+  const SeqOpRemove(this.at);
+  final int at;
+}
+
 /// Sequence CRDT — a Δ-state derivation of the Fugue list CRDT
 /// (Weidner, Gentle, Kleppmann, *Fugue: A Basis for Elegant CRDTs*,
 /// PaPoC 2023).
@@ -87,6 +113,18 @@ class SeqEntry<T> {
 /// remain in `chars` because their position is still required to
 /// resolve their descendants. The implicit causal context is
 /// `chars.keys`.
+///
+/// **Storage.** Backed by a native [Map] treated as immutable by
+/// convention. Mutating methods build a fresh map (full O(N) copy)
+/// before returning a new [Sequence]. This is fast for batch updates
+/// (one copy + K mutations via [applyOps]) but pathological for
+/// per-op loops on a large sequence (`seq = seq.insertAt(...)` in a
+/// tight cycle becomes O(K · N)). The migration away from
+/// `fast_immutable_collections` chose iteration-throughput over
+/// structural sharing because rhyolite's hot paths are
+/// iteration-dominant ([_visible], [_buildChildrenIndex], projection
+/// to text) and our only multi-op write path ([applyOps]) is
+/// explicitly batched.
 ///
 /// **Insert rule** (Fugue, Algorithm 1):
 /// - Empty sequence → new entry is a root.
@@ -113,11 +151,9 @@ class SeqEntry<T> {
 /// 1. Are in the supplied stable [DotSet], AND
 /// 2. Have no live descendants in the tree.
 class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
-  /// Backed by a HAMT-based persistent map (`fast_immutable_collections`).
-  /// `add`/`remove` are O(log₃₂ N) with structural sharing, so producing
-  /// a new [Sequence] after an insert/remove no longer copies the whole
-  /// entry table — append/prepend stay logarithmic regardless of size.
-  final IMap<Hlc, SeqEntry<T>> _chars;
+  /// Private storage. Treated as immutable — never mutated after
+  /// construction. Cloned at every mutation boundary.
+  final Map<Hlc, SeqEntry<T>> _chars;
 
   /// Optional pre-computed "last visible entry" hint, propagated by
   /// fast-path mutations ([append]) so subsequent appends skip the
@@ -130,7 +166,14 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
   /// by [prepend].
   final SeqEntry<T>? _firstVisibleHint;
 
-  const Sequence._(
+  /// Memoized result of [_visible]. Lazily filled on first read and
+  /// shared across all accessors of the same instance ([values],
+  /// [length], [], [_resolveInsertion]). Because [Sequence] is
+  /// immutable, the cached list is also safe to expose as
+  /// `List.unmodifiable` views.
+  List<SeqEntry<T>>? _visibleCache;
+
+  Sequence._(
     this._chars, {
     SeqEntry<T>? lastVisibleHint,
     SeqEntry<T>? firstVisibleHint,
@@ -138,18 +181,20 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
        _firstVisibleHint = firstVisibleHint;
 
   Sequence.empty()
-    : _chars = <Hlc, SeqEntry<T>>{}.lock,
+    : _chars = const {},
       _lastVisibleHint = null,
       _firstVisibleHint = null;
 
   /// Reconstructs a sequence from its raw entry map. Intended for
-  /// codecs.
+  /// codecs. The supplied map is copied — callers may mutate their
+  /// reference afterwards without affecting the [Sequence].
   factory Sequence.fromRaw(Map<Hlc, SeqEntry<T>> chars) =>
-      Sequence._(IMap<Hlc, SeqEntry<T>>(chars));
+      Sequence._(Map<Hlc, SeqEntry<T>>.of(chars));
 
-  /// All entries (live + tombstoned), keyed by id. Stable iteration
-  /// order is not guaranteed.
-  IMap<Hlc, SeqEntry<T>> get entries => _chars;
+  /// All entries (live + tombstoned), keyed by id. The returned map
+  /// is the internal storage and **must not be mutated**. Stable
+  /// iteration order is not guaranteed.
+  Map<Hlc, SeqEntry<T>> get entries => _chars;
 
   /// Implicit causal context — the set of every dot observed.
   DotSet get context => DotSet.from(_chars.keys);
@@ -184,10 +229,11 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
   /// Inserts [value] at position [index], minting a fresh entry
   /// with [dot]. Returns the new sequence.
   ///
-  /// O(N) — rebuilds the visible projection to resolve the parent.
-  /// For the common append/prepend cases (typing at either end of a
-  /// document) prefer [append] / [prepend], which skip the rebuild
-  /// and run in O(log N) when the corresponding edge hint is warm.
+  /// O(N) — rebuilds the visible projection to resolve the parent
+  /// AND copies the underlying entry map. For per-op loops on large
+  /// sequences prefer [applyOps], which copies the map once for the
+  /// whole batch. For the common append/prepend cases (typing at
+  /// either end) [append] / [prepend] skip the projection rebuild.
   Sequence<T> insertAt(int index, T value, Hlc dot) =>
       join(deltaInsertAt(index, value, dot));
 
@@ -202,8 +248,9 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
       side: SequenceSide.right,
       value: value,
     );
+    final next = Map<Hlc, SeqEntry<T>>.of(_chars)..[dot] = newEntry;
     return Sequence<T>._(
-      _chars.add(dot, newEntry),
+      next,
       lastVisibleHint: newEntry,
       // Prepend hint is invalidated only when prepending onto an empty
       // sequence — appending into a sequence with an existing first
@@ -225,8 +272,9 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
       side: firstVisible == null ? SequenceSide.right : SequenceSide.left,
       value: value,
     );
+    final next = Map<Hlc, SeqEntry<T>>.of(_chars)..[dot] = newEntry;
     return Sequence<T>._(
-      _chars.add(dot, newEntry),
+      next,
       firstVisibleHint: newEntry,
       lastVisibleHint: _lastVisibleHint ?? newEntry,
     );
@@ -238,6 +286,92 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
     final delta = deltaRemoveAt(index);
     if (delta == null) return this;
     return join(delta);
+  }
+
+  /// Applies a sequence of [ops] as a single batch. Allocates one
+  /// fresh entry map and mints dots for inserts via [nextHlc]. Ops
+  /// are interpreted in list order against the evolving visible
+  /// projection — `SeqOp.insert(3, …)` followed by
+  /// `SeqOp.removeAt(2)` resolves the remove against the post-insert
+  /// indexing.
+  ///
+  /// **Cost.** O(N + K · N_visible) where N is the entry-map size and
+  /// K is `ops.length`. Each op mutates a working `List<SeqEntry>`
+  /// in-place (`removeAt`/`insert` are O(N_visible) on a list), so
+  /// the batch matches the per-op cost asymptotically but pays the
+  /// O(N) map copy **only once** instead of K times. For the
+  /// rhyolite text-reconcile pattern (K ~ thousands, N ~ tens of
+  /// thousands) this turns a multi-second drip into a single
+  /// millisecond batch.
+  ///
+  /// Returns `this` if [ops] is empty.
+  Sequence<T> applyOps(List<SeqOp<T>> ops, Hlc Function() nextHlc) {
+    if (ops.isEmpty) return this;
+
+    // Working visible list — mutated in place across all ops. Cold copy
+    // of the cached visible list (so the cache on `this` stays valid
+    // for any caller that still holds a reference).
+    final workVisible = List<SeqEntry<T>>.of(_visible());
+
+    // Working entry map — cloned once, mutated in place.
+    final workChars = Map<Hlc, SeqEntry<T>>.of(_chars);
+
+    // Incrementally maintained "has any right-side child" index, keyed
+    // by parent id. Built once from `_chars` (O(N)), updated O(1) on
+    // every insert that lands as a right child. Replaces the per-op
+    // O(N) scan inside `_hasObservedChildrenIn` for the batch path —
+    // this is what turns applyOps into O(N + K) end-to-end.
+    final hasRightChild = <Hlc>{};
+    for (final e in _chars.values) {
+      final p = e.parent;
+      if (p != null && e.side == SequenceSide.right) {
+        hasRightChild.add(p);
+      }
+    }
+
+    // Track whether any op actually changed something so we can short
+    // circuit on a stream of out-of-range removes.
+    var changed = false;
+
+    for (final op in ops) {
+      switch (op) {
+        case SeqOpInsert<T>(at: final at, value: final v):
+          final (parent, side) = _resolveInsertionBatched(
+            workVisible,
+            hasRightChild,
+            at,
+          );
+          final dot = nextHlc();
+          final entry = SeqEntry<T>(
+            id: dot,
+            parent: parent,
+            side: side,
+            value: v,
+          );
+          workChars[dot] = entry;
+          if (parent != null && side == SequenceSide.right) {
+            hasRightChild.add(parent);
+          }
+          // Position in the visible list: clamp to bounds — matches
+          // the semantics of [_resolveInsertion] which treats
+          // `index < 0` as 0 and `index > len` as append.
+          final pos = at < 0
+              ? 0
+              : (at > workVisible.length ? workVisible.length : at);
+          workVisible.insert(pos, entry);
+          changed = true;
+        case SeqOpRemove<T>(at: final at):
+          if (at < 0 || at >= workVisible.length) continue;
+          final target = workVisible[at];
+          final tombed = target.withTombstone(true);
+          workChars[target.id] = tombed;
+          workVisible.removeAt(at);
+          changed = true;
+      }
+    }
+
+    if (!changed) return this;
+    return Sequence<T>._(workChars);
   }
 
   // ---------------------------------------------------------------------------
@@ -254,7 +388,7 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
       side: side,
       value: value,
     );
-    return Sequence<T>._(<Hlc, SeqEntry<T>>{dot: newEntry}.lock);
+    return Sequence<T>._({dot: newEntry});
   }
 
   /// Δ-state delta carrying just a tombstoned entry for the live
@@ -263,9 +397,7 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
     final v = _visible();
     if (index < 0 || index >= v.length) return null;
     final target = v[index];
-    return Sequence<T>._(
-      <Hlc, SeqEntry<T>>{target.id: target.withTombstone(true)}.lock,
-    );
+    return Sequence<T>._({target.id: target.withTombstone(true)});
   }
 
   // ---------------------------------------------------------------------------
@@ -284,27 +416,34 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
   /// tombstoned (observed-remove semantics).
   @override
   Sequence<T> join(Sequence<T> other) {
-    // Iterate over the smaller side and fold into the larger, so we
-    // pay O(min(|this|, |other|) · log(max)) instead of touching every
-    // id when one delta is tiny — the common case for δ-state inserts.
+    if (other._chars.isEmpty) return this;
+    if (_chars.isEmpty) return other;
+
+    // Iterate over the smaller side and fold into a copy of the
+    // larger, so we pay one O(|large|) copy plus O(|small|) lookups
+    // and conditional writes.
     final (small, large) = _chars.length <= other._chars.length
         ? (_chars, other._chars)
         : (other._chars, _chars);
-    var merged = large;
+    final merged = Map<Hlc, SeqEntry<T>>.of(large);
+    var changed = false;
     for (final entry in small.entries) {
       final id = entry.key;
       final mine = entry.value;
       final theirs = merged[id];
       if (theirs == null) {
-        merged = merged.add(id, mine);
+        merged[id] = mine;
+        changed = true;
         continue;
       }
       // Both sides have it. OR-merge tombstone bit. Position metadata
       // is identical across replicas that have observed the entry.
       final tomb = mine.tombstoned || theirs.tombstoned;
       if (tomb == theirs.tombstoned) continue;
-      merged = merged.add(id, theirs.withTombstone(tomb));
+      merged[id] = theirs.withTombstone(tomb);
+      changed = true;
     }
+    if (!changed && identical(large, _chars)) return this;
     return Sequence<T>._(merged);
   }
 
@@ -334,18 +473,22 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
       return false;
     }
 
-    // Build the kept set by removing only what should be dropped — most
-    // pruning passes touch a small fraction of entries, so we save
-    // re-allocating the whole map in that case.
-    var kept = _chars;
+    // First pass: collect ids to drop. If none, return this unchanged
+    // (avoids a Map.of copy when prune is a no-op, which is the common
+    // case for sequences without ready-to-drop tombstones).
+    final toDrop = <Hlc>[];
     for (final entry in _chars.entries) {
       final e = entry.value;
       if (!e.tombstoned) continue;
       if (!stable.contains(entry.key)) continue;
       if (hasLiveDescendant(entry.key)) continue;
-      kept = kept.remove(entry.key);
+      toDrop.add(entry.key);
     }
-    if (identical(kept, _chars)) return this;
+    if (toDrop.isEmpty) return this;
+    final kept = Map<Hlc, SeqEntry<T>>.of(_chars);
+    for (final id in toDrop) {
+      kept.remove(id);
+    }
     return Sequence<T>._(kept);
   }
 
@@ -355,8 +498,28 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
 
   /// Resolves `(parent, side)` for an insertion at logical [index]
   /// against the current visible sequence.
-  (Hlc?, SequenceSide) _resolveInsertion(int index) {
-    final v = _visible();
+  (Hlc?, SequenceSide) _resolveInsertion(int index) =>
+      _resolveInsertionInList(_visible(), index);
+
+  /// Same as [_resolveInsertion] but operates on an externally supplied
+  /// visible list. Uses `this._chars` to test for observed children.
+  /// Suitable for single-op mutation paths; [applyOps] uses the
+  /// `WithChars` variant because its working entry map mutates between
+  /// ops and the stale `_chars` view would lead to colliding positions.
+  (Hlc?, SequenceSide) _resolveInsertionInList(
+    List<SeqEntry<T>> v,
+    int index,
+  ) => _resolveInsertionInListWithChars(v, _chars, index);
+
+  /// Variant of [_resolveInsertionInList] that scans an externally
+  /// supplied entry map for the "observed right children" predicate.
+  /// Required inside [applyOps] where the working map carries entries
+  /// added by earlier ops in the same batch.
+  (Hlc?, SequenceSide) _resolveInsertionInListWithChars(
+    List<SeqEntry<T>> v,
+    Map<Hlc, SeqEntry<T>> chars,
+    int index,
+  ) {
     if (v.isEmpty) return (null, SequenceSide.right);
     if (index <= 0) {
       return (v.first.id, SequenceSide.left);
@@ -366,7 +529,8 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
     }
     final leftNeighbour = v[index - 1];
     final rightNeighbour = v[index];
-    final hasRightChildren = _hasObservedChildren(
+    final hasRightChildren = _hasObservedChildrenIn(
+      chars,
       leftNeighbour.id,
       SequenceSide.right,
     );
@@ -376,8 +540,36 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
     return (rightNeighbour.id, SequenceSide.left);
   }
 
-  bool _hasObservedChildren(Hlc parentId, SequenceSide side) {
-    for (final e in _chars.values) {
+  /// Batch-friendly variant of insertion resolution. Uses a
+  /// pre-computed [hasRightChild] set instead of scanning all entries
+  /// for the predicate, which is what gives [applyOps] its O(N + K)
+  /// envelope.
+  (Hlc?, SequenceSide) _resolveInsertionBatched(
+    List<SeqEntry<T>> v,
+    Set<Hlc> hasRightChild,
+    int index,
+  ) {
+    if (v.isEmpty) return (null, SequenceSide.right);
+    if (index <= 0) {
+      return (v.first.id, SequenceSide.left);
+    }
+    if (index >= v.length) {
+      return (v.last.id, SequenceSide.right);
+    }
+    final leftNeighbour = v[index - 1];
+    final rightNeighbour = v[index];
+    if (!hasRightChild.contains(leftNeighbour.id)) {
+      return (leftNeighbour.id, SequenceSide.right);
+    }
+    return (rightNeighbour.id, SequenceSide.left);
+  }
+
+  bool _hasObservedChildrenIn(
+    Map<Hlc, SeqEntry<T>> chars,
+    Hlc parentId,
+    SequenceSide side,
+  ) {
+    for (final e in chars.values) {
       if (e.parent == parentId && e.side == side) return true;
     }
     return false;
@@ -405,7 +597,8 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
   }
 
   /// Materialises the visible list via in-order DFS of the position
-  /// tree.
+  /// tree. Memoized — every getter that reads visible order shares the
+  /// same cached list for the lifetime of this [Sequence] instance.
   ///
   /// Iterative implementation: long right-chains (typing at the tail
   /// of a single document) build trees thousands of levels deep, and
@@ -413,11 +606,17 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
   /// iterative form uses an explicit work stack and handles arbitrary
   /// depth.
   List<SeqEntry<T>> _visible() {
-    if (_chars.isEmpty) return const [];
+    final cached = _visibleCache;
+    if (cached != null) return cached;
+    if (_chars.isEmpty) return _visibleCache = const [];
+
     final childrenIndex = _buildChildrenIndex();
     final result = <SeqEntry<T>>[];
-    final roots = _chars.values.where((e) => e.parent == null).toList()
-      ..sort((a, b) => a.id.compareTo(b.id));
+    final roots = <SeqEntry<T>>[];
+    for (final e in _chars.values) {
+      if (e.parent == null) roots.add(e);
+    }
+    roots.sort((a, b) => a.id.compareTo(b.id));
 
     // Each work item is either:
     //  - SeqEntry<T> directly → "visit this node (emit if live)"
@@ -458,7 +657,7 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
         stack.add(_ExpandFrame<T>(left[i]));
       }
     }
-    return result;
+    return _visibleCache = result;
   }
 
   /// Build a parent.id → children list index. O(N) once per call.
@@ -475,7 +674,11 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
   @override
   bool operator ==(Object other) {
     if (other is! Sequence<T>) return false;
-    return _chars.equalItemsToIMap(other._chars);
+    if (_chars.length != other._chars.length) return false;
+    for (final entry in _chars.entries) {
+      if (other._chars[entry.key] != entry.value) return false;
+    }
+    return true;
   }
 
   @override

@@ -487,4 +487,209 @@ void main() {
       expect(decodedT.entries.length, s.entries.length);
     });
   });
+
+  group('Sequence — applyOps batch', () {
+    test('empty ops list returns identical instance', () {
+      final clk = clockOf('A');
+      final s = Sequence<String>.empty()
+          .insertAt(0, 'a', clk())
+          .insertAt(1, 'b', clk());
+      expect(identical(s.applyOps([], clk), s), isTrue);
+    });
+
+    test('all-out-of-range removes return identical instance', () {
+      final clk = clockOf('A');
+      final s = Sequence<String>.empty().insertAt(0, 'a', clk());
+      final result = s.applyOps([
+        const SeqOp.removeAt(5),
+        const SeqOp.removeAt(-1),
+      ], clk);
+      expect(identical(result, s), isTrue);
+    });
+
+    test('batch of inserts at tail matches drip insertAt', () {
+      final dripClk = clockOf('A');
+      var drip = Sequence<String>.empty();
+      for (final ch in const ['h', 'e', 'l', 'l', 'o']) {
+        drip = drip.insertAt(drip.length, ch, dripClk());
+      }
+
+      final batchClk = clockOf('A');
+      final batch = Sequence<String>.empty().applyOps(const [
+        SeqOp.insert(0, 'h'),
+        SeqOp.insert(1, 'e'),
+        SeqOp.insert(2, 'l'),
+        SeqOp.insert(3, 'l'),
+        SeqOp.insert(4, 'o'),
+      ], batchClk);
+
+      expect(batch.values, drip.values);
+      expect(batch.entries.length, drip.entries.length);
+    });
+
+    test('mixed insert + remove in one batch resolves indices in-order', () {
+      final clk = clockOf('A');
+      // Start with "abcd"; in one batch: insert 'X' at 2 → "abXcd",
+      // then remove at 1 → "aXcd", then insert 'Y' at 4 → "aXcdY".
+      var s = Sequence<String>.empty();
+      for (final ch in const ['a', 'b', 'c', 'd']) {
+        s = s.insertAt(s.length, ch, clk());
+      }
+      final result = s.applyOps(const [
+        SeqOp.insert(2, 'X'),
+        SeqOp.removeAt(1),
+        SeqOp.insert(4, 'Y'),
+      ], clk);
+      expect(result.values, ['a', 'X', 'c', 'd', 'Y']);
+    });
+
+    test('batch equivalent to drip for randomized edits', () {
+      // Same op script applied via drip (insertAt/removeAt) and via
+      // applyOps must produce identical visible projections AND
+      // identical entry counts. Tombstones may differ in order but
+      // not in count.
+      final rng = Random(7);
+      final ops = <SeqOp<String>>[];
+      var virtualLen = 0;
+      for (var i = 0; i < 200; i++) {
+        final wantInsert = virtualLen == 0 || rng.nextDouble() < 0.7;
+        if (wantInsert) {
+          final at = rng.nextInt(virtualLen + 1);
+          ops.add(
+            SeqOp.insert(at, String.fromCharCode(0x61 + rng.nextInt(26))),
+          );
+          virtualLen += 1;
+        } else {
+          final at = rng.nextInt(virtualLen);
+          ops.add(SeqOp.removeAt(at));
+          virtualLen -= 1;
+        }
+      }
+
+      Hlc Function() seq(String node) {
+        var c = 0;
+        return () {
+          c += 1;
+          return Hlc(1000, c, node);
+        };
+      }
+
+      var drip = Sequence<String>.empty();
+      final dripClk = seq('A');
+      for (final op in ops) {
+        switch (op) {
+          case SeqOpInsert<String>(at: final at, value: final v):
+            drip = drip.insertAt(at, v, dripClk());
+          case SeqOpRemove<String>(at: final at):
+            drip = drip.removeAt(at);
+        }
+      }
+
+      final batch = Sequence<String>.empty().applyOps(ops, seq('A'));
+
+      expect(batch.values, drip.values);
+      expect(batch.entries.length, drip.entries.length);
+    });
+
+    test('applyOps batches converge across two replicas via join', () {
+      // Two replicas independently apply different batches; joining
+      // both ways converges to the same Sequence.
+      Hlc Function() seq(String node) {
+        var c = 0;
+        return () {
+          c += 1;
+          return Hlc(1000, c, node);
+        };
+      }
+
+      final a = Sequence<String>.empty().applyOps(const [
+        SeqOp.insert(0, 'a'),
+        SeqOp.insert(1, 'b'),
+        SeqOp.insert(2, 'c'),
+      ], seq('A'));
+      final b = Sequence<String>.empty().applyOps(const [
+        SeqOp.insert(0, 'x'),
+        SeqOp.insert(1, 'y'),
+      ], seq('B'));
+
+      final ab = a.join(b);
+      final ba = b.join(a);
+      expect(ab.values, ba.values);
+      expect(ab, ba);
+    });
+  });
+
+  group('Sequence — perf regression (was: O(K·N) drip hang)', () {
+    test('applyOps with K=1000 on N=10k base completes under 2s on VM', () {
+      // Pre-migration this scenario hung Obsidian for ~77s on dart2js.
+      // VM is faster than dart2js by ~3-5x for this workload, but a
+      // 2s budget on VM still catches the algorithmic regression that
+      // mattered. The 10k seed is half the size of the file that
+      // produced the original hang — enough to expose O(K·N) but fast
+      // enough to keep CI cheap.
+      var s = Sequence<String>.empty();
+      var counter = 0;
+      Hlc dot() {
+        counter += 1;
+        return Hlc(1000, counter, 'A');
+      }
+
+      for (var i = 0; i < 10000; i++) {
+        s = s.append(String.fromCharCode(0x61 + (i % 26)), dot());
+      }
+      expect(s.length, 10000);
+
+      final ops = <SeqOp<String>>[];
+      for (var i = 0; i < 1000; i++) {
+        ops.add(SeqOp.insert(5000 + i, 'X'));
+      }
+
+      final sw = Stopwatch()..start();
+      final result = s.applyOps(ops, dot);
+      sw.stop();
+
+      expect(result.length, 11000);
+      expect(
+        sw.elapsedMilliseconds < 2000,
+        isTrue,
+        reason: 'applyOps took ${sw.elapsedMilliseconds}ms — regression?',
+      );
+    });
+
+    test(
+      'memoized _visible: repeated values reads on same instance are cheap',
+      () {
+        // Build a non-trivial sequence, then read .values many times.
+        // First call computes; subsequent calls return the cached list.
+        // Without memoization each call rebuilds _visible() at O(N log N).
+        var s = Sequence<String>.empty();
+        var counter = 0;
+        Hlc dot() {
+          counter += 1;
+          return Hlc(1000, counter, 'A');
+        }
+
+        for (var i = 0; i < 5000; i++) {
+          s = s.append(String.fromCharCode(0x61 + (i % 26)), dot());
+        }
+        // Warm the cache.
+        final first = s.values;
+        expect(first.length, 5000);
+
+        final sw = Stopwatch()..start();
+        for (var i = 0; i < 100; i++) {
+          // ignore: unused_local_variable
+          final v = s.values;
+        }
+        sw.stop();
+        // 100 reads of a 5k-Sequence's projection should be trivial when
+        // memoized. If we ever break the cache, this turns multi-second.
+        expect(
+          sw.elapsedMilliseconds < 500,
+          isTrue,
+          reason: '100 cached .values reads took ${sw.elapsedMilliseconds}ms',
+        );
+      },
+    );
+  });
 }
