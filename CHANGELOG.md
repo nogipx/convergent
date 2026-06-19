@@ -1,3 +1,15 @@
+## 0.4.1
+
+`LwwRegister.join` now collapses to the single winning value instead of
+carrying the underlying `MvRegister`'s concurrent survivors. For an LWW
+register the winner (highest HLC) is the only meaningful result, so keeping
+the losers was pure bloat: under node-id churn each writer added a
+`TaggedValue` with its own growing context, accumulating O(N²) and producing
+multi-MB register states in the field. The collapse folds every survivor's
+HLC + context into the winner's context so the losers are dominated and never
+resurface on a later join. Still a valid semilattice op (commutative,
+associative, idempotent); the register now stays O(1) per leaf.
+
 ## 0.4.0
 
 Performance overhaul of `Sequence`. Production trigger: a 23k-entry

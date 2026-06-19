@@ -63,8 +63,29 @@ class LwwRegister<T> implements Crdt<LwwRegister<T>> {
   LwwRegister<T> get empty => LwwRegister<T>.empty();
 
   @override
-  LwwRegister<T> join(LwwRegister<T> other) =>
-      LwwRegister._(_inner.join(other._inner));
+  LwwRegister<T> join(LwwRegister<T> other) {
+    final joined = _inner.join(other._inner);
+    final values = joined.values;
+    if (values.length <= 1) return LwwRegister._(joined);
+    // LWW semantics: the result is the single highest-HLC value, so the
+    // concurrent survivors the underlying MvRegister keeps are redundant here.
+    // Retaining them accumulates one TaggedValue — each with its own growing
+    // context — per writer node, which bloats without bound under node churn
+    // (the cause of multi-MB field-map states). Collapse to the winner and fold
+    // every survivor's HLC + context into its context so the losers are
+    // dominated and never resurface on a later join. Still a valid semilattice
+    // op: the winner is the global HLC-max and the context is the union, so
+    // join stays commutative, associative and idempotent.
+    var winner = values.first;
+    var context = const CausalContext.empty();
+    for (final v in values) {
+      if (v.hlc > winner.hlc) winner = v;
+      context = context.merge(v.context).advance(v.hlc);
+    }
+    return LwwRegister._(
+      MvRegister.single(winner.value, winner.hlc, context: context),
+    );
+  }
 
   @override
   LwwRegister<T> deltaCompose(LwwRegister<T> other) => join(other);
