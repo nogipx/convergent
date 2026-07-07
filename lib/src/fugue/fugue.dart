@@ -106,8 +106,9 @@ class Fugue<T> implements Crdt<Fugue<T>> {
   void _index(_Block<T> b) {
     _blocks[b.start] = b;
     (_children[b.parent] ??= <_Block<T>>[]).add(b);
-    (_byReplica[b.start.replica] ??= SplayTreeMap<int, _Block<T>>())[
-        b.start.counter] = b;
+    (_byReplica[b.start.replica] ??=
+            SplayTreeMap<int, _Block<T>>())[b.start.counter] =
+        b;
   }
 
   /// A deep, independent copy — the basis of the immutable [join].
@@ -239,8 +240,9 @@ class Fugue<T> implements Crdt<Fugue<T>> {
   // ---------------------------------------------------------------------------
 
   /// The live values in resolved order.
-  List<T> get values =>
-      [for (final e in _visibleElems()) e.block.values[e.offset]];
+  List<T> get values => [
+    for (final e in _visibleElems()) e.block.values[e.offset],
+  ];
 
   /// Number of live (non-tombstoned) elements.
   int get length => _visibleElems().length;
@@ -434,8 +436,12 @@ class Fugue<T> implements Crdt<Fugue<T>> {
     for (final ob in other._blocks.values) {
       final mine = _blocks[ob.start];
       if (mine == null) {
-        final nb =
-            _Block<T>(ob.start, ob.parent, ob.side, List<T>.of(ob.values));
+        final nb = _Block<T>(
+          ob.start,
+          ob.parent,
+          ob.side,
+          List<T>.of(ob.values),
+        );
         nb.deleted.addAll(ob.deleted);
         _index(nb);
       } else {

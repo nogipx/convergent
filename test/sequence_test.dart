@@ -287,18 +287,20 @@ void main() {
       return Sequence<String>.fromRaw(entries);
     }
 
-    test('prune keeps a deep tombstone chain with a live tail (no overflow)',
-        () {
-      // Regression: hasLiveDescendant recursed to full tree depth and
-      // crashed with StackOverflowError past ~10k on the VM (earlier on
-      // dart2js). Every tombstone here has the live tail as a descendant,
-      // so none is prunable — but resolving that must not blow the stack.
-      const n = 50000;
-      final s = deepChain(n, liveTail: true);
-      final pruned = s.prune(DotSet.from(s.entries.keys));
-      expect(pruned.entries.length, n);
-      expect(pruned.values, ['c${n - 1}']);
-    });
+    test(
+      'prune keeps a deep tombstone chain with a live tail (no overflow)',
+      () {
+        // Regression: hasLiveDescendant recursed to full tree depth and
+        // crashed with StackOverflowError past ~10k on the VM (earlier on
+        // dart2js). Every tombstone here has the live tail as a descendant,
+        // so none is prunable — but resolving that must not blow the stack.
+        const n = 50000;
+        final s = deepChain(n, liveTail: true);
+        final pruned = s.prune(DotSet.from(s.entries.keys));
+        expect(pruned.entries.length, n);
+        expect(pruned.values, ['c${n - 1}']);
+      },
+    );
 
     test('prune drops a fully-tombstoned deep chain (no overflow)', () {
       // The drop path at depth: a wholly-deleted chain, all stable, must
@@ -338,13 +340,15 @@ void main() {
     }
 
     // Forward run: values label0..label{n-1} left to right.
-    List<SeqOp<String>> forwardRun(String label, int at, int n) =>
-        [for (var i = 0; i < n; i++) SeqOp.insert(at + i, '$label$i')];
+    List<SeqOp<String>> forwardRun(String label, int at, int n) => [
+      for (var i = 0; i < n; i++) SeqOp.insert(at + i, '$label$i'),
+    ];
 
     // Backward run: same visible result, but each char inserted at the
     // SAME index, pushing the previous ones right (caret-stays typing).
-    List<SeqOp<String>> backwardRun(String label, int at, int n) =>
-        [for (var i = n - 1; i >= 0; i--) SeqOp.insert(at, '$label$i')];
+    List<SeqOp<String>> backwardRun(String label, int at, int n) => [
+      for (var i = n - 1; i >= 0; i--) SeqOp.insert(at, '$label$i'),
+    ];
 
     // Applies an insert-only run either as one applyOps batch (the real
     // sync path, exercising _resolveInsertionBatched) or as drip insertAt
@@ -413,10 +417,12 @@ void main() {
 
         final at = base.length == 0 ? 0 : rng.nextInt(base.length + 1);
         final n = 2 + rng.nextInt(4);
-        final aOps =
-            rng.nextBool() ? forwardRun('A', at, n) : backwardRun('A', at, n);
-        final bOps =
-            rng.nextBool() ? forwardRun('B', at, n) : backwardRun('B', at, n);
+        final aOps = rng.nextBool()
+            ? forwardRun('A', at, n)
+            : backwardRun('A', at, n);
+        final bOps = rng.nextBool()
+            ? forwardRun('B', at, n)
+            : backwardRun('B', at, n);
 
         // A and B share millis so their ids interleave in HLC order — see
         // the group comment. Each is a concurrent run against `base`.
@@ -430,7 +436,8 @@ void main() {
         expect(
           v,
           isNull,
-          reason: 'seed=$seed at=$at n=$n viaBatch=$viaBatch '
+          reason:
+              'seed=$seed at=$at n=$n viaBatch=$viaBatch '
               'merged=${ab.values} -> $v',
         );
       }
@@ -463,6 +470,7 @@ void main() {
           return last;
         };
       }
+
       for (var seed = 0; seed < 500; seed++) {
         final rng = Random(seed);
         var base = Sequence<String>.empty();
@@ -481,8 +489,9 @@ void main() {
         }
         final at = base.length == 0 ? 0 : rng.nextInt(base.length + 1);
         final n = 2 + rng.nextInt(4);
-        final ops =
-            rng.nextBool() ? forwardRun('A', at, n) : backwardRun('A', at, n);
+        final ops = rng.nextBool()
+            ? forwardRun('A', at, n)
+            : backwardRun('A', at, n);
         final result = base.applyOps(ops, clockAt('A', 1000)); // edit newer
         final expected = [...base.values]
           ..insertAll(at, [for (var i = 0; i < n; i++) 'A$i']);

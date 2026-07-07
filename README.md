@@ -3,8 +3,8 @@
 Convergent Replicated Data Types for Dart.
 
 Self-contained, dependency-free primitives — registers, sets, counters,
-maps, **sequences (Δ-state Fugue)** — together with the supporting
-clock and causal-context machinery. Every type implements a shared
+maps, and list / text CRDTs (**`Fugue`** and `Sequence`) — together with
+the supporting clock and causal-context machinery. Every type implements a shared
 `Crdt<Self>` interface with three operations:
 
 - `join` — cross-replica merge; commutative, associative, idempotent.
@@ -55,7 +55,11 @@ License: MIT.
   add/remove.
 - `PnCounter` — positive/negative counter, per-replica G-Counters.
 - `CrdtMap<K, V extends Crdt<V>>` — per-key join over nested CRDTs.
-- `Sequence<T>` — ordered Δ-state Fugue list / text CRDT.
+- `Fugue<T>` — optimised list / text CRDT; run-length ("waypoint")
+  Fugue in `package:convergent/fugue.dart`. **Recommended** for
+  lists / text.
+- `Sequence<T>` — ordered Δ-state Fugue list / text CRDT (HLC-based;
+  superseded by `Fugue` for new code).
 
 **Δ-state shipping:**
 - `Mutator<C>` — per-replica delta accumulator. Tracks current
@@ -384,7 +388,63 @@ Combine with `OrSet<K>` to support deletion.
 
 ---
 
+## `Fugue<T>` — Optimised list / text CRDT
+
+`package:convergent/fugue.dart`. A run-length ("waypoint") implementation
+of the full Fugue algorithm from *The Art of the Fugue: Minimizing
+Interleaving in Collaborative Text Editing* (Weidner & Kleppmann, IEEE TPDS
+2025). Prefer it over `Sequence` for new code: a contiguously-typed run is
+stored as a single block instead of one node per character (~2 bytes/char
+through the binary codec, vs ~618 for one-node-per-char), while remaining a
+faithful **state-based** CRDT (the paper's own reformulation of the
+algorithm).
+
+Identity is a **logical `Dot(counter, replica)`**, not an `Hlc` — a logical
+counter is what lets a run share consecutive counters and coalesce into one
+block. `LamportClock` mints dots; `observe` folds observed counters in so a
+fresh edit causally dominates the content it edits (no separate skew-witness
+step needed).
+
+```dart
+final clk = LamportClock(deviceId);
+final f = Fugue<String>();
+
+// Index-based edits.
+f.insert(0, 'h', clk.tick());
+final delta = f.applyOps([FugueOp.insert(1, 'i')], clk); // batch → δ to ship
+
+// Position-based edits — stable cursors that survive concurrent edits and
+// the anchor element's own deletion.
+final pos = f.positionAt(0);
+f.insertAfter(pos, '!', clk.tick());
+
+// Merge / serialise.
+final merged = f.join(other);                          // semilattice join
+final bytes  = const FugueTextBinaryCodec().encode(f); // compact bytes
+```
+
+- **Non-interleaving** (the paper's Theorem 1): concurrent runs at the same
+  position never interleave — each stays a contiguous block.
+- **State-based + delta**: `join` is commutative / associative / idempotent;
+  `applyOps` returns a δ-fragment such that `base.join(δ)` reconstructs the
+  applied state.
+- **Pruning**: `prune(Set<Dot> stable)` drops fully-tombstoned, causally
+  stable, anchorless blocks (block-granular).
+- **Codecs**: `FugueCodec<T>(Codec<T>)` (JSON) and `FugueTextBinaryCodec`
+  (replica-id interning + LEB128 varints + one packed UTF-8 string per run;
+  ~2 bytes/char, encode/decode ~2 ms for a 20k-char doc).
+
+Because `Fugue` runs a **separate logical clock**, it does not share the
+library's HLC causal context or `DotSet` pruning — that is the one reason
+`Sequence` is retained.
+
+---
+
 ## `Sequence<T>` — Ordered Δ-state CRDT (Fugue)
+
+> **Superseded by `Fugue` (above) for new code.** `Sequence` is retained for
+> HLC-integrated use — it shares the library's causal context and `DotSet`
+> pruning, whereas `Fugue` runs a separate logical clock.
 
 Position tree of `SeqEntry<T>` keyed by `Hlc` dots. Derived from
 Weidner, Gentle, Kleppmann, *Fugue: A Basis for Elegant CRDTs*

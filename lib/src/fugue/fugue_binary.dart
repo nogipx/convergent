@@ -116,9 +116,7 @@ class FugueTextBinaryCodec {
         for (final rune in text.runes) String.fromCharCode(rune),
       ];
       final delCount = r.varint();
-      final del = <int>[
-        for (var j = 0; j < delCount * 2; j++) r.varint(),
-      ];
+      final del = <int>[for (var j = 0; j < delCount * 2; j++) r.varint()];
       blocks.add((Dot(startCounter, startReplica), parent, side, values, del));
     }
     return Fugue.fromRawBlocks<String>(blocks);

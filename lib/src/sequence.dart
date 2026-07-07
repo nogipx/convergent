@@ -501,9 +501,7 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
   /// (post-order), so `subtreeHasLive[child.id]` — true when the child or
   /// any of its descendants is live — is available when the parent is
   /// resolved. An entry joins the result when any child's subtree is live.
-  Set<Hlc> _idsWithLiveDescendant(
-    Map<Hlc, List<SeqEntry<T>>> childrenIndex,
-  ) {
+  Set<Hlc> _idsWithLiveDescendant(Map<Hlc, List<SeqEntry<T>>> childrenIndex) {
     final result = <Hlc>{};
     final subtreeHasLive = <Hlc, bool>{};
 

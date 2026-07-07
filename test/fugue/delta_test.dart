@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Karim "nogipx" Mamatkazin <nogipx@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 // Delta-state properties: applyOps returns a δ-fragment such that
 // base.join(δ) reconstructs the applied state, δs compose, and merges are
 // associative across three replicas.
@@ -14,10 +18,12 @@ List<FugueOp<String>> randomOps(Random rng, int len0, int count) {
       ops.add(FugueOp.removeAt(rng.nextInt(len)));
       len--;
     } else {
-      ops.add(FugueOp.insert(
-        len == 0 ? 0 : rng.nextInt(len + 1),
-        String.fromCharCode(0x61 + rng.nextInt(26)),
-      ));
+      ops.add(
+        FugueOp.insert(
+          len == 0 ? 0 : rng.nextInt(len + 1),
+          String.fromCharCode(0x61 + rng.nextInt(26)),
+        ),
+      );
       len++;
     }
   }

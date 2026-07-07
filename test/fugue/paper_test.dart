@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Karim "nogipx" Mamatkazin <nogipx@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 // External validation against the worked examples in "The Art of the Fugue"
 // (Weidner & Kleppmann, TPDS 2025) — independent of our Algorithm-1 oracle,
 // so it catches an oracle-transcription mistake, not just self-consistency.
@@ -38,10 +42,16 @@ void main() {
     test('Fig 1 — concurrent "eggs" / "bread" do not interleave', () {
       final base = typed('milk\n', LamportClock('S'));
 
-      final a = typed('eggs\n', LamportClock('A')..observeAll(base.dots),
-          base.clone());
-      final b = typed('bread\n', LamportClock('B')..observeAll(base.dots),
-          base.clone());
+      final a = typed(
+        'eggs\n',
+        LamportClock('A')..observeAll(base.dots),
+        base.clone(),
+      );
+      final b = typed(
+        'bread\n',
+        LamportClock('B')..observeAll(base.dots),
+        base.clone(),
+      );
 
       final merged = a.join(b).values.join();
       expect(merged.startsWith('milk\n'), isTrue);

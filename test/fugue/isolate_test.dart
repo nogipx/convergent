@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Karim "nogipx" Mamatkazin <nogipx@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 // True-concurrent convergence: each replica runs in its own isolate, edits
 // with a real Lamport clock, and ships its state as JSON across the SendPort
 // (full codec round-trip). The main isolate merges and checks that all join
@@ -19,10 +23,12 @@ List<FugueOp<String>> _randomOps(Random rng, int len0, int count) {
       ops.add(FugueOp.removeAt(rng.nextInt(len)));
       len--;
     } else {
-      ops.add(FugueOp.insert(
-        len == 0 ? 0 : rng.nextInt(len + 1),
-        String.fromCharCode(0x61 + rng.nextInt(26)),
-      ));
+      ops.add(
+        FugueOp.insert(
+          len == 0 ? 0 : rng.nextInt(len + 1),
+          String.fromCharCode(0x61 + rng.nextInt(26)),
+        ),
+      );
       len++;
     }
   }
@@ -61,12 +67,14 @@ void main() {
       final labels = ['A', 'B', 'C'];
       final results = await Future.wait([
         for (var i = 0; i < labels.length; i++)
-          Isolate.run(() => _worker({
-                'base': baseJson,
-                'replica': labels[i],
-                'seed': trial * 17 + i,
-                'ops': 12,
-              })),
+          Isolate.run(
+            () => _worker({
+              'base': baseJson,
+              'replica': labels[i],
+              'seed': trial * 17 + i,
+              'ops': 12,
+            }),
+          ),
       ]);
 
       final replicas = [for (final r in results) _codec.decode(jsonDecode(r))];

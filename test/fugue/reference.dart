@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Karim "nogipx" Mamatkazin <nogipx@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 // Test-only oracle: a naive, obviously-correct transcription of Fugue
 // Algorithm 1 (Weidner & Kleppmann, "The Art of the Fugue", TPDS 2025).
 //

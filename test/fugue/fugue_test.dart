@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Karim "nogipx" Mamatkazin <nogipx@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 // The optimised block Fugue must be observationally identical to the
 // reference oracle (literal Algorithm 1) for every op history, and must
 // coalesce forward-typed runs into blocks.

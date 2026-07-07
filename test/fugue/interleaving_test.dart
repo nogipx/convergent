@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Karim "nogipx" Mamatkazin <nogipx@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 // Direct non-interleaving guard on the optimised Fugue (Theorem 1). Two
 // concurrent runs at the same position, with INTERLEAVED ids (both replicas
 // mint from the same base counter, so their dots alternate in sort order),
@@ -65,7 +69,13 @@ void main() {
     base.insert(1, 'R', s.tick());
     for (final aB in [false, true]) {
       for (final bB in [false, true]) {
-        final v = mergedRuns(base: base, aBackward: aB, bBackward: bB, at: 1, n: 4);
+        final v = mergedRuns(
+          base: base,
+          aBackward: aB,
+          bBackward: bB,
+          at: 1,
+          n: 4,
+        );
         expect(violation(v, 4), isNull, reason: 'aBwd=$aB bBwd=$bB -> $v');
       }
     }

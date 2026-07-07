@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Karim "nogipx" Mamatkazin <nogipx@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 // Validates the reference oracle (literal Fugue Algorithm 1) so it can be
 // trusted when fuzzing the optimised block implementation against it.
 import 'dart:math';
@@ -51,18 +55,20 @@ void main() {
       expect(f.values(), ['a', 'b', 'c']);
     });
 
-    test('delete then insert at the same spot survives across the tombstone',
-        () {
-      final clk = LamportClock('A');
-      final f = RefFugue<String>();
-      f.insert(0, 'a', clk.tick());
-      f.insert(1, 'b', clk.tick());
-      f.insert(2, 'c', clk.tick());
-      f.delete(1); // b
-      expect(f.values(), ['a', 'c']);
-      f.insert(1, 'B', clk.tick()); // between a and c, across the b tombstone
-      expect(f.values(), ['a', 'B', 'c']);
-    });
+    test(
+      'delete then insert at the same spot survives across the tombstone',
+      () {
+        final clk = LamportClock('A');
+        final f = RefFugue<String>();
+        f.insert(0, 'a', clk.tick());
+        f.insert(1, 'b', clk.tick());
+        f.insert(2, 'c', clk.tick());
+        f.delete(1); // b
+        expect(f.values(), ['a', 'c']);
+        f.insert(1, 'B', clk.tick()); // between a and c, across the b tombstone
+        expect(f.values(), ['a', 'B', 'c']);
+      },
+    );
   });
 
   // Builds a random session of inserts/deletes on top of [base], authored by
@@ -175,8 +181,11 @@ void main() {
       for (final aB in [false, true]) {
         for (final bB in [false, true]) {
           final v = merged(aB, bB, 4);
-          expect(violation(v, 4), isNull,
-              reason: 'aBackward=$aB bBackward=$bB -> $v');
+          expect(
+            violation(v, 4),
+            isNull,
+            reason: 'aBackward=$aB bBackward=$bB -> $v',
+          );
         }
       }
     });

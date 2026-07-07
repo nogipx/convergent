@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Karim "nogipx" Mamatkazin <nogipx@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 import 'dart:math';
 
 import 'package:convergent/fugue.dart';
@@ -28,10 +32,7 @@ void main() {
       final r = RefFugue<String>();
       final f = Fugue<String>();
       // A couple of replicas so the dictionary has >1 entry.
-      final clocks = {
-        'A': LamportClock('A'),
-        'B': LamportClock('B'),
-      };
+      final clocks = {'A': LamportClock('A'), 'B': LamportClock('B')};
       for (var i = 0; i < 40; i++) {
         final len = f.length;
         if (len > 0 && rng.nextDouble() < 0.3) {
@@ -42,9 +43,9 @@ void main() {
           final at = len == 0 ? 0 : rng.nextInt(len + 1);
           final v = String.fromCharCode(0x61 + rng.nextInt(26));
           final clk = clocks[rng.nextBool() ? 'A' : 'B']!
-            ..observe(f.dots.isEmpty
-                ? 0
-                : f.dots.map((d) => d.counter).reduce(max));
+            ..observe(
+              f.dots.isEmpty ? 0 : f.dots.map((d) => d.counter).reduce(max),
+            );
           final d = clk.tick();
           r.insert(at, v, d);
           f.insert(at, v, d);
@@ -83,14 +84,19 @@ void main() {
 
     expect(decoded.values, f.values);
     // The binary encoding should be well under 3 bytes/char for this doc.
-    expect(binBytes.length / f.length, lessThan(3.0),
-        reason: 'binary size ${binBytes.length}B for ${f.length} chars');
+    expect(
+      binBytes.length / f.length,
+      lessThan(3.0),
+      reason: 'binary size ${binBytes.length}B for ${f.length} chars',
+    );
 
     // Informational (not asserted beyond sanity):
     // ignore: avoid_print
-    print('binary: ${binBytes.length}B '
-        '(${(binBytes.length / f.length).toStringAsFixed(2)} B/char), '
-        'encode ${tBinEnc.elapsedMilliseconds / 20}ms, '
-        'decode ${tBinDec.elapsedMilliseconds / 20}ms per op');
+    print(
+      'binary: ${binBytes.length}B '
+      '(${(binBytes.length / f.length).toStringAsFixed(2)} B/char), '
+      'encode ${tBinEnc.elapsedMilliseconds / 20}ms, '
+      'decode ${tBinDec.elapsedMilliseconds / 20}ms per op',
+    );
   });
 }

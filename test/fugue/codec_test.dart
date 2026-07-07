@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Karim "nogipx" Mamatkazin <nogipx@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 // Round-trips through the run-length codec, and shows the coalescing win:
 // a typed-and-edited document encodes to a handful of block rows, not one
 // row per character.
@@ -42,8 +46,11 @@ void main() {
         f.insert(f.length, String.fromCharCode(0x61 + (i % 26)), clk.tick());
       }
       final json = f.encode((s) => s) as Map;
-      expect((json['b'] as List).length, 1,
-          reason: '10k-char run must serialise as one waypoint');
+      expect(
+        (json['b'] as List).length,
+        1,
+        reason: '10k-char run must serialise as one waypoint',
+      );
 
       final back = roundtrip(f);
       expect(back.length, 10000);
