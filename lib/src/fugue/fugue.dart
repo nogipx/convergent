@@ -502,6 +502,32 @@ class Fugue<T> implements Crdt<Fugue<T>> {
     return f;
   }
 
+  /// Low-level per-block view for codecs: `(start, parent, side, values,
+  /// deletedRanges)`, where `deletedRanges` is a flat `[start, len, …]` list.
+  /// The [values] list must not be mutated.
+  Iterable<(Dot, Dot, Side, List<T>, List<int>)> get rawBlocks sync* {
+    for (final b in _blocks.values) {
+      yield (b.start, b.parent, b.side, b.values, _encodeDeleted(b.deleted));
+    }
+  }
+
+  /// Rebuild from [rawBlocks]-shaped data (codec use).
+  static Fugue<T> fromRawBlocks<T>(
+    Iterable<(Dot, Dot, Side, List<T>, List<int>)> blocks,
+  ) {
+    final f = Fugue<T>();
+    for (final (start, parent, side, values, delRanges) in blocks) {
+      final b = _Block<T>(start, parent, side, List<T>.of(values));
+      for (var i = 0; i + 1 < delRanges.length; i += 2) {
+        for (var k = 0; k < delRanges[i + 1]; k++) {
+          b.deleted.add(delRanges[i] + k);
+        }
+      }
+      f._index(b);
+    }
+    return f;
+  }
+
   /// Number of stored blocks — for coalescing assertions in tests.
   int get blockCount => _blocks.length;
 

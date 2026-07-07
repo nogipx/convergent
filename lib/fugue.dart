@@ -13,3 +13,4 @@ export 'src/codec/codec.dart' show Codec, StringCodec, IntCodec, DoubleCodec, Bo
 export 'src/fugue/dot.dart';
 export 'src/fugue/fugue.dart';
 export 'src/fugue/fugue_codec.dart';
+export 'src/fugue/fugue_binary.dart';
