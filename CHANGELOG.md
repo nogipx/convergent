@@ -1,3 +1,60 @@
+## 0.5.0
+
+New `Fugue` list CRDT — the optimised, academically-faithful implementation
+of Fugue from *The Art of the Fugue: Minimizing Interleaving in Collaborative
+Text Editing* (Weidner & Kleppmann, IEEE TPDS 2025) — plus correctness fixes
+to `Sequence`.
+
+### Added
+
+- **`package:convergent/fugue.dart` — `Fugue<T>`**: a run-length ("waypoint")
+  implementation of Fugue Algorithm 1. A contiguously-typed run is stored as a
+  single block instead of one node per element (~2 bytes/char with the binary
+  codec, vs ~618 for one-node-per-char), yet it is a faithful **state-based**
+  CRDT — the paper's own reformulation of the algorithm. `join` is a validated
+  join-semilattice (commutative / associative / idempotent), and behaviour is
+  fuzzed against a literal Algorithm-1 oracle across 900+ concurrent
+  merge scenarios and checked against the paper's worked examples
+  (Figures 1, 4 and 6).
+  - **Identity**: `Dot(counter, replica)` + `LamportClock` — a logical counter,
+    not an HLC, which is what lets a run share consecutive counters and
+    coalesce. `LamportClock.observe` gives edits causal dominance over observed
+    content for free.
+  - **Non-interleaving** (the paper's central property, Theorem 1): concurrent
+    runs at the same position never interleave; guarded by a direct fuzz.
+  - **Delta-state**: `applyOps(ops, clock)` applies a batch locally and returns
+    a δ-fragment such that `base.join(δ)` reconstructs the state.
+  - **Pruning**: `prune(Set<Dot> stable)` drops fully-tombstoned, causally
+    stable, anchorless blocks (block-granular; iterative).
+  - **Codecs**: `FugueCodec<T>(Codec<T>)` (JSON) and `FugueTextBinaryCodec`
+    (compact bytes — replica-id interning + LEB128 varints + one packed UTF-8
+    string per run; ~2 bytes/char, encode/decode ~2 ms for a 20k-char doc).
+  - **Position API** (stable cursors): `positionAt` / `indexOf` / `valueAt` /
+    `isLive` + `insertAfter(anchor)` / `deleteDot` operate on stable `Dot`
+    positions that survive concurrent edits and the anchored element's own
+    deletion — what an editor uses to pin cursors, selections and comments.
+
+### Fixed
+
+- **`Sequence` insert resolution.** The middle-insert rule used "does the left
+  neighbour have any right child" as a proxy for Fugue's ancestor test. That
+  misfired when the neighbour's right subtree was fully tombstoned, misplacing
+  the insert — and, on the per-op path, interleaving concurrent runs — whenever
+  the new dot sorted before that neighbour. Now decided by true ancestry (a
+  bidirectional parent-chain walk); misprojection is eliminated across all id
+  orderings, and the two mutation paths share one resolver.
+- **`Sequence.prune` stack overflow.** The recursive live-descendant check
+  overflowed the stack on a deep right-chain (a linearly-typed document past
+  ~10k characters) — on the main-isolate GC path. Replaced with a single
+  iterative post-order pass; also collapses the old O(N·depth) re-traversal to
+  O(N).
+
+### Changed
+
+- `Sequence` is documented as **superseded by `Fugue`** for new code. It is
+  retained for HLC-integrated use (shared causal context, `DotSet` pruning),
+  since `Fugue` runs a separate logical (Lamport) clock.
+
 ## 0.4.1
 
 `LwwRegister.join` now collapses to the single winning value instead of
