@@ -264,6 +264,231 @@ void main() {
       final twice = once.prune(stable);
       expect(twice, once);
     });
+
+    // Builds a right-chain of [n] entries (each the RIGHT child of the
+    // previous) via [Sequence.fromRaw]. Every entry is tombstoned except
+    // when [liveTail] is set, in which case the last one stays live.
+    // A linearly-typed note IS a right-chain this deep, so this mirrors
+    // the real GC input on a large single-author file.
+    Sequence<String> deepChain(int n, {required bool liveTail}) {
+      final entries = <Hlc, SeqEntry<String>>{};
+      Hlc? prev;
+      for (var i = 0; i < n; i++) {
+        final dot = Hlc(1000, i + 1, 'A');
+        entries[dot] = SeqEntry<String>(
+          id: dot,
+          parent: prev,
+          side: SequenceSide.right,
+          value: 'c$i',
+          tombstoned: liveTail ? i != n - 1 : true,
+        );
+        prev = dot;
+      }
+      return Sequence<String>.fromRaw(entries);
+    }
+
+    test('prune keeps a deep tombstone chain with a live tail (no overflow)',
+        () {
+      // Regression: hasLiveDescendant recursed to full tree depth and
+      // crashed with StackOverflowError past ~10k on the VM (earlier on
+      // dart2js). Every tombstone here has the live tail as a descendant,
+      // so none is prunable — but resolving that must not blow the stack.
+      const n = 50000;
+      final s = deepChain(n, liveTail: true);
+      final pruned = s.prune(DotSet.from(s.entries.keys));
+      expect(pruned.entries.length, n);
+      expect(pruned.values, ['c${n - 1}']);
+    });
+
+    test('prune drops a fully-tombstoned deep chain (no overflow)', () {
+      // The drop path at depth: a wholly-deleted chain, all stable, must
+      // collapse to empty via the bottom-up (iterative) descendant check.
+      const n = 50000;
+      final s = deepChain(n, liveTail: false);
+      final pruned = s.prune(DotSet.from(s.entries.keys));
+      expect(pruned.entries, isEmpty);
+      expect(pruned.values, isEmpty);
+    });
+  });
+
+  group('Sequence — non-interleaving (Fugue property)', () {
+    // The defining reason to pick Fugue over RGA/Logoot: two runs typed
+    // concurrently at the same position must NOT interleave — each stays
+    // a contiguous block. This models the real sync_v3 path: a device
+    // authors a whole run (the diff of a file save), and devices merge by
+    // join. Nothing else in the suite guards this property — degrade
+    // _resolveInsertion toward RGA and every other test still passes.
+    //
+    // REGRESSION-DETECTING POWER lives in the clock design below: A and B
+    // share the SAME millis, so their dots INTERLEAVE in HLC order
+    // (A#1 < B#1 < A#2 < B#2 < …). A correct Fugue keeps each run as one
+    // subtree, so the merged order is contiguous *despite* the interleaved
+    // ids. A broken resolver that flattens both runs into siblings of a
+    // common parent sorts them by id and thus WEAVES them — caught as a
+    // transition-count violation. If A and B instead used disjoint id
+    // ranges (e.g. millis 2000 vs 3000), every A-dot would sort before
+    // every B-dot and even a fully broken resolver would look contiguous —
+    // the test would be green and worthless. Do NOT separate the ranges.
+    Hlc Function() clockOf(String node) {
+      var last = Hlc(1000, 0, node);
+      return () {
+        last = Hlc(last.millis, last.counter + 1, node);
+        return last;
+      };
+    }
+
+    // Forward run: values label0..label{n-1} left to right.
+    List<SeqOp<String>> forwardRun(String label, int at, int n) =>
+        [for (var i = 0; i < n; i++) SeqOp.insert(at + i, '$label$i')];
+
+    // Backward run: same visible result, but each char inserted at the
+    // SAME index, pushing the previous ones right (caret-stays typing).
+    List<SeqOp<String>> backwardRun(String label, int at, int n) =>
+        [for (var i = n - 1; i >= 0; i--) SeqOp.insert(at, '$label$i')];
+
+    // Applies an insert-only run either as one applyOps batch (the real
+    // sync path, exercising _resolveInsertionBatched) or as drip insertAt
+    // calls (exercising _resolveInsertionInListWithChars). Both resolution
+    // paths must uphold the property, so the fuzz runs against each.
+    Sequence<String> applyRun(
+      Sequence<String> base,
+      List<SeqOp<String>> ops,
+      Hlc Function() clk, {
+      required bool viaBatch,
+    }) {
+      if (viaBatch) return base.applyOps(ops, clk);
+      var s = base;
+      for (final op in ops) {
+        final ins = op as SeqOpInsert<String>;
+        s = s.insertAt(ins.at, ins.value, clk());
+      }
+      return s;
+    }
+
+    // null == ok. Otherwise a description of the violation.
+    String? violation(List<String> merged, int n) {
+      final letters = <String>[];
+      final seqs = {'A': <int>[], 'B': <int>[]};
+      for (final v in merged) {
+        final lab = v[0];
+        if (seqs.containsKey(lab)) {
+          letters.add(lab);
+          seqs[lab]!.add(int.parse(v.substring(1)));
+        }
+      }
+      var transitions = 0;
+      for (var i = 1; i < letters.length; i++) {
+        if (letters[i] != letters[i - 1]) transitions++;
+      }
+      if (transitions > 1) {
+        return 'INTERLEAVED (${letters.join()})';
+      }
+      for (final e in seqs.entries) {
+        if (e.value.length != n) return '${e.key}-run wrong length ${e.value}';
+        for (var i = 0; i < n; i++) {
+          if (e.value[i] != i) return '${e.key}-run scrambled ${e.value}';
+        }
+      }
+      return null;
+    }
+
+    void runFuzz({required bool viaBatch}) {
+      for (var seed = 0; seed < 500; seed++) {
+        final rng = Random(seed);
+        // Shared base with some tombstones, authored by device 'S'.
+        var base = Sequence<String>.empty();
+        final sClk = clockOf('S');
+        final baseLen = 1 + rng.nextInt(5);
+        for (var i = 0; i < baseLen; i++) {
+          base = base.insertAt(
+            base.length == 0 ? 0 : rng.nextInt(base.length + 1),
+            'S$i',
+            sClk(),
+          );
+        }
+        for (var i = 0, d = rng.nextInt(base.length); i < d; i++) {
+          if (base.length == 0) break;
+          base = base.removeAt(rng.nextInt(base.length));
+        }
+
+        final at = base.length == 0 ? 0 : rng.nextInt(base.length + 1);
+        final n = 2 + rng.nextInt(4);
+        final aOps =
+            rng.nextBool() ? forwardRun('A', at, n) : backwardRun('A', at, n);
+        final bOps =
+            rng.nextBool() ? forwardRun('B', at, n) : backwardRun('B', at, n);
+
+        // A and B share millis so their ids interleave in HLC order — see
+        // the group comment. Each is a concurrent run against `base`.
+        final a = applyRun(base, aOps, clockOf('A'), viaBatch: viaBatch);
+        final b = applyRun(base, bOps, clockOf('B'), viaBatch: viaBatch);
+
+        final ab = a.join(b);
+        final ba = b.join(a);
+        expect(ab.values, ba.values, reason: 'diverges at seed=$seed');
+        final v = violation(ab.values, n);
+        expect(
+          v,
+          isNull,
+          reason: 'seed=$seed at=$at n=$n viaBatch=$viaBatch '
+              'merged=${ab.values} -> $v',
+        );
+      }
+    }
+
+    test('two concurrent runs never interleave — applyOps batch path', () {
+      runFuzz(viaBatch: true);
+    });
+
+    // Both resolution paths use the same ancestry-based resolver, so the
+    // drip path upholds non-interleaving even across a tombstoned right
+    // subtree with adversarially interleaved ids (previously a known bug —
+    // it misrouted the run and flattened it into siblings).
+    test('two concurrent runs never interleave — drip insertAt path', () {
+      runFuzz(viaBatch: false);
+    });
+
+    test('applyOps splices a diff run at the requested index '
+        '(realistic HLC: edits newer than base)', () {
+      // sync_v3's core invariant: applyOps(diffOps).values == newText.
+      // Realistic ordering — base authored OLDER (smaller millis) than the
+      // edit, as sync_v3 runs it (a fresh edit's HLC dominates existing
+      // content). The resolver is now correct under any ordering; this
+      // guards the absolute-position invariant that the non-interleaving
+      // fuzz above does not check directly.
+      Hlc Function() clockAt(String node, int ms) {
+        var last = Hlc(ms, 0, node);
+        return () {
+          last = Hlc(last.millis, last.counter + 1, node);
+          return last;
+        };
+      }
+      for (var seed = 0; seed < 500; seed++) {
+        final rng = Random(seed);
+        var base = Sequence<String>.empty();
+        final sClk = clockAt('S', 500); // base older -> smaller ids
+        final baseLen = 1 + rng.nextInt(5);
+        for (var i = 0; i < baseLen; i++) {
+          base = base.insertAt(
+            base.length == 0 ? 0 : rng.nextInt(base.length + 1),
+            'S$i',
+            sClk(),
+          );
+        }
+        for (var i = 0, d = rng.nextInt(base.length); i < d; i++) {
+          if (base.length == 0) break;
+          base = base.removeAt(rng.nextInt(base.length));
+        }
+        final at = base.length == 0 ? 0 : rng.nextInt(base.length + 1);
+        final n = 2 + rng.nextInt(4);
+        final ops =
+            rng.nextBool() ? forwardRun('A', at, n) : backwardRun('A', at, n);
+        final result = base.applyOps(ops, clockAt('A', 1000)); // edit newer
+        final expected = [...base.values]
+          ..insertAll(at, [for (var i = 0; i < n; i++) 'A$i']);
+        expect(result.values, expected, reason: 'seed=$seed at=$at');
+      }
+    });
   });
 
   group('Sequence — randomized convergence (fuzz)', () {

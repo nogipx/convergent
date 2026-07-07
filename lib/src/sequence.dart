@@ -131,10 +131,16 @@ class SeqOpRemove<T> extends SeqOp<T> {
 /// - Index 0 with non-empty list → LEFT child of the leftmost visible
 ///   entry.
 /// - Index `n` (append) → RIGHT child of the rightmost visible entry.
-/// - Index `i` in the middle:
-///   - If the left neighbour at `i-1` has no right-side children
-///     observed, insert as RIGHT child of the left neighbour.
-///   - Otherwise insert as LEFT child of the right neighbour at `i`.
+/// - Index `i` in the middle, between visible neighbours `L` (at `i-1`)
+///   and `R` (at `i`):
+///   - If `L` is an ancestor of `R` (i.e. `R` lives in `L`'s right
+///     subtree), insert as LEFT child of `R`.
+///   - Otherwise (R is an ancestor of L, or they are siblings/cousins),
+///     insert as RIGHT child of `L`.
+///
+///   Ancestry — not "does `L` have any right child" — is what keeps the
+///   placement correct when `L`'s right subtree is entirely tombstoned:
+///   `L` then has a right child yet is not an ancestor of `R`.
 ///
 /// **Read** is an in-order DFS of the position tree, ordered by
 /// `(side, id)` per parent — LEFT children sorted by id, then the
@@ -313,21 +319,10 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
     // for any caller that still holds a reference).
     final workVisible = List<SeqEntry<T>>.of(_visible());
 
-    // Working entry map — cloned once, mutated in place.
+    // Working entry map — cloned once, mutated in place. The resolver
+    // walks parent chains through this map, so entries added by earlier
+    // ops in the batch inform later ops' placement decisions.
     final workChars = Map<Hlc, SeqEntry<T>>.of(_chars);
-
-    // Incrementally maintained "has any right-side child" index, keyed
-    // by parent id. Built once from `_chars` (O(N)), updated O(1) on
-    // every insert that lands as a right child. Replaces the per-op
-    // O(N) scan inside `_hasObservedChildrenIn` for the batch path —
-    // this is what turns applyOps into O(N + K) end-to-end.
-    final hasRightChild = <Hlc>{};
-    for (final e in _chars.values) {
-      final p = e.parent;
-      if (p != null && e.side == SequenceSide.right) {
-        hasRightChild.add(p);
-      }
-    }
 
     // Track whether any op actually changed something so we can short
     // circuit on a stream of out-of-range removes.
@@ -336,9 +331,9 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
     for (final op in ops) {
       switch (op) {
         case SeqOpInsert<T>(at: final at, value: final v):
-          final (parent, side) = _resolveInsertionBatched(
+          final (parent, side) = _resolveInsertionInListWithChars(
             workVisible,
-            hasRightChild,
+            workChars,
             at,
           );
           final dot = nextHlc();
@@ -349,9 +344,6 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
             value: v,
           );
           workChars[dot] = entry;
-          if (parent != null && side == SequenceSide.right) {
-            hasRightChild.add(parent);
-          }
           // Position in the visible list: clamp to bounds — matches
           // the semantics of [_resolveInsertion] which treats
           // `index < 0` as 0 and `index > len` as append.
@@ -463,15 +455,13 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
   Sequence<T> prune(DotSet stable) {
     final childrenIndex = _buildChildrenIndex();
 
-    bool hasLiveDescendant(Hlc id) {
-      final children = childrenIndex[id];
-      if (children == null) return false;
-      for (final c in children) {
-        if (!c.tombstoned) return true;
-        if (hasLiveDescendant(c.id)) return true;
-      }
-      return false;
-    }
+    // Precompute the set of ids that have a live (non-tombstoned) strict
+    // descendant. Single iterative pass — a linearly-typed document is a
+    // right-chain as deep as it is long, and the previous recursive
+    // hasLiveDescendant overflowed the stack past ~10k entries (the same
+    // reason [_visible] is iterative). This also collapses the old
+    // O(N · depth) re-traversal to O(N).
+    final hasLiveDescendant = _idsWithLiveDescendant(childrenIndex);
 
     // First pass: collect ids to drop. If none, return this unchanged
     // (avoids a Map.of copy when prune is a no-op, which is the common
@@ -481,7 +471,7 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
       final e = entry.value;
       if (!e.tombstoned) continue;
       if (!stable.contains(entry.key)) continue;
-      if (hasLiveDescendant(entry.key)) continue;
+      if (hasLiveDescendant.contains(entry.key)) continue;
       toDrop.add(entry.key);
     }
     if (toDrop.isEmpty) return this;
@@ -490,6 +480,62 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
       kept.remove(id);
     }
     return Sequence<T>._(kept);
+  }
+
+  /// Ids of every entry that has at least one live (non-tombstoned)
+  /// strict descendant, computed in a single iterative post-order walk of
+  /// the forest so it never recurses on deep right-chains.
+  ///
+  /// Roots are entries with no parent OR whose parent is absent from
+  /// [_chars] (orphans); every entry hangs off exactly one such root, so
+  /// the walk visits each once. Children are computed before their parent
+  /// (post-order), so `subtreeHasLive[child.id]` — true when the child or
+  /// any of its descendants is live — is available when the parent is
+  /// resolved. An entry joins the result when any child's subtree is live.
+  Set<Hlc> _idsWithLiveDescendant(
+    Map<Hlc, List<SeqEntry<T>>> childrenIndex,
+  ) {
+    final result = <Hlc>{};
+    final subtreeHasLive = <Hlc, bool>{};
+
+    // Work stack: _ExpandFrame(node) == "push children, then compute
+    // this node after them"; a bare SeqEntry == "compute this node".
+    final stack = <Object>[];
+    for (final e in _chars.values) {
+      final p = e.parent;
+      if (p == null || !_chars.containsKey(p)) {
+        stack.add(_ExpandFrame<T>(e));
+      }
+    }
+
+    while (stack.isNotEmpty) {
+      final item = stack.removeLast();
+      if (item is _ExpandFrame<T>) {
+        final node = item.node;
+        stack.add(node); // compute-after-children marker
+        final children = childrenIndex[node.id];
+        if (children != null) {
+          for (final c in children) {
+            stack.add(_ExpandFrame<T>(c));
+          }
+        }
+      } else {
+        final node = item as SeqEntry<T>;
+        final children = childrenIndex[node.id];
+        var liveDesc = false;
+        if (children != null) {
+          for (final c in children) {
+            if (subtreeHasLive[c.id] == true) {
+              liveDesc = true;
+              break;
+            }
+          }
+        }
+        if (liveDesc) result.add(node.id);
+        subtreeHasLive[node.id] = liveDesc || !node.tombstoned;
+      }
+    }
+    return result;
   }
 
   // ---------------------------------------------------------------------------
@@ -502,19 +548,18 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
       _resolveInsertionInList(_visible(), index);
 
   /// Same as [_resolveInsertion] but operates on an externally supplied
-  /// visible list. Uses `this._chars` to test for observed children.
-  /// Suitable for single-op mutation paths; [applyOps] uses the
-  /// `WithChars` variant because its working entry map mutates between
-  /// ops and the stale `_chars` view would lead to colliding positions.
+  /// visible list, resolving ancestry against `this._chars`. Suitable for
+  /// single-op mutation paths.
   (Hlc?, SequenceSide) _resolveInsertionInList(
     List<SeqEntry<T>> v,
     int index,
   ) => _resolveInsertionInListWithChars(v, _chars, index);
 
-  /// Variant of [_resolveInsertionInList] that scans an externally
-  /// supplied entry map for the "observed right children" predicate.
-  /// Required inside [applyOps] where the working map carries entries
-  /// added by earlier ops in the same batch.
+  /// Resolves `(parent, side)` for an insertion at visible [index] against
+  /// the supplied visible list [v], walking parent chains through [chars]
+  /// to decide the neighbour ancestry. [applyOps] passes its mutating
+  /// working map so entries added by earlier ops in the same batch are
+  /// seen; single-op paths pass `this._chars`.
   (Hlc?, SequenceSide) _resolveInsertionInListWithChars(
     List<SeqEntry<T>> v,
     Map<Hlc, SeqEntry<T>> chars,
@@ -529,50 +574,32 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
     }
     final leftNeighbour = v[index - 1];
     final rightNeighbour = v[index];
-    final hasRightChildren = _hasObservedChildrenIn(
-      chars,
-      leftNeighbour.id,
-      SequenceSide.right,
-    );
-    if (!hasRightChildren) {
-      return (leftNeighbour.id, SequenceSide.right);
+    // Between two adjacent visible characters exactly one of three
+    // structural relations holds: the left is an ancestor of the right,
+    // the right is an ancestor of the left, or they are siblings/cousins
+    // under a shared ancestor. Fugue descends the RIGHT neighbour's left
+    // side only when the left is an ancestor of the right; otherwise it
+    // attaches to the LEFT neighbour's right side (which correctly covers
+    // both the right-ancestor-of-left and the sibling cases). Decide by
+    // walking both parent chains upward in lockstep — the descendant
+    // reaches its ancestor first; if neither does, they are siblings.
+    //
+    // Using true ancestry, rather than "does the left neighbour have any
+    // right child", is what stays correct when the left neighbour's right
+    // subtree is fully tombstoned: it then has a right child but is NOT an
+    // ancestor of the (visible) right neighbour, and the old predicate
+    // misrouted the insert to the far side of the left neighbour.
+    final lId = leftNeighbour.id;
+    final rId = rightNeighbour.id;
+    Hlc? upL = leftNeighbour.parent;
+    Hlc? upR = rightNeighbour.parent;
+    while (upL != null || upR != null) {
+      if (upR == lId) return (rId, SequenceSide.left); // left ⊐ right
+      if (upL == rId) return (lId, SequenceSide.right); // right ⊐ left
+      if (upL != null) upL = chars[upL]?.parent;
+      if (upR != null) upR = chars[upR]?.parent;
     }
-    return (rightNeighbour.id, SequenceSide.left);
-  }
-
-  /// Batch-friendly variant of insertion resolution. Uses a
-  /// pre-computed [hasRightChild] set instead of scanning all entries
-  /// for the predicate, which is what gives [applyOps] its O(N + K)
-  /// envelope.
-  (Hlc?, SequenceSide) _resolveInsertionBatched(
-    List<SeqEntry<T>> v,
-    Set<Hlc> hasRightChild,
-    int index,
-  ) {
-    if (v.isEmpty) return (null, SequenceSide.right);
-    if (index <= 0) {
-      return (v.first.id, SequenceSide.left);
-    }
-    if (index >= v.length) {
-      return (v.last.id, SequenceSide.right);
-    }
-    final leftNeighbour = v[index - 1];
-    final rightNeighbour = v[index];
-    if (!hasRightChild.contains(leftNeighbour.id)) {
-      return (leftNeighbour.id, SequenceSide.right);
-    }
-    return (rightNeighbour.id, SequenceSide.left);
-  }
-
-  bool _hasObservedChildrenIn(
-    Map<Hlc, SeqEntry<T>> chars,
-    Hlc parentId,
-    SequenceSide side,
-  ) {
-    for (final e in chars.values) {
-      if (e.parent == parentId && e.side == side) return true;
-    }
-    return false;
+    return (lId, SequenceSide.right); // siblings/cousins → attach to left
   }
 
   /// Iteratively walks the rightmost path of the position tree to find
