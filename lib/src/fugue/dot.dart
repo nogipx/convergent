@@ -3,7 +3,13 @@
 // SPDX-License-Identifier: MIT
 
 /// Side of a parent a Fugue tree node attaches to.
-enum Side { left, right }
+enum Side {
+  /// Ordered before the parent in the in-order traversal.
+  left,
+
+  /// Ordered after the parent in the in-order traversal.
+  right,
+}
 
 /// A logical (Lamport-style) identifier for one element of a Fugue list.
 ///
@@ -20,6 +26,7 @@ enum Side { left, right }
 /// "the exact construction of IDs and their order is not important"), so
 /// this choice is not semantically load-bearing beyond being consistent.
 class Dot implements Comparable<Dot> {
+  /// Creates a dot with logical [counter] and author [replica].
   const Dot(this.counter, this.replica);
 
   /// Per-replica logical clock value. Strictly positive for real elements;
@@ -33,6 +40,7 @@ class Dot implements Comparable<Dot> {
   /// Never stored as a real element; used only as a parent sentinel.
   static const Dot origin = Dot(0, '');
 
+  /// Whether this is the [origin] sentinel.
   bool get isOrigin => counter == 0 && replica.isEmpty;
 
   @override
@@ -41,9 +49,16 @@ class Dot implements Comparable<Dot> {
     return c != 0 ? c : replica.compareTo(other.replica);
   }
 
+  /// Whether this dot orders before [other].
   bool operator <(Dot other) => compareTo(other) < 0;
+
+  /// Whether this dot orders after [other].
   bool operator >(Dot other) => compareTo(other) > 0;
+
+  /// Whether this dot orders at or before [other].
   bool operator <=(Dot other) => compareTo(other) <= 0;
+
+  /// Whether this dot orders at or after [other].
   bool operator >=(Dot other) => compareTo(other) >= 0;
 
   @override
@@ -65,8 +80,10 @@ class Dot implements Comparable<Dot> {
 /// separate HLC-witness step had to enforce out-of-band: an edit authored
 /// against pulled content always sorts after that content.
 class LamportClock {
+  /// Creates a clock for [replica], optionally resuming from a prior counter.
   LamportClock(this.replica, [this._counter = 0]);
 
+  /// Stable identifier of this replica; stamped into every minted [Dot].
   final String replica;
   int _counter;
 

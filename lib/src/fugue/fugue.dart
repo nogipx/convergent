@@ -4,6 +4,7 @@
 
 import 'dart:collection';
 
+import '../crdt.dart';
 import 'dot.dart';
 
 /// A run-length block ("waypoint") of consecutively-authored elements.
@@ -41,13 +42,20 @@ class _Expand<T> {
   final _Elem<T> e;
 }
 
+/// Marks "expand this block's children" on the prune post-order stack; a bare
+/// [_Block] on the stack means "compute droppability now".
+class _ExpandBlock<T> {
+  _ExpandBlock(this.b);
+  final _Block<T> b;
+}
+
 /// The optimised, run-length ("waypoint") Fugue list CRDT — a faithful
 /// implementation of Algorithm 1 (Weidner & Kleppmann, TPDS 2025) that stores
 /// contiguously-typed runs as single blocks instead of one node per element.
 ///
 /// Element identity is a logical [Dot] (not an HLC), so a forward-typed run
 /// carries consecutive counters and collapses into one block.
-class Fugue<T> {
+class Fugue<T> implements Crdt<Fugue<T>> {
   /// Blocks keyed by their start dot.
   final Map<Dot, _Block<T>> _blocks = <Dot, _Block<T>>{};
 
@@ -70,6 +78,7 @@ class Fugue<T> {
         b.start.counter] = b;
   }
 
+  /// A deep, independent copy — the basis of the immutable [join].
   Fugue<T> clone() {
     final c = Fugue<T>();
     for (final b in _blocks.values) {
@@ -197,9 +206,11 @@ class Fugue<T> {
   // Public API
   // ---------------------------------------------------------------------------
 
+  /// The live values in resolved order.
   List<T> get values =>
       [for (final e in _visibleElems()) e.block.values[e.offset]];
 
+  /// Number of live (non-tombstoned) elements.
   int get length => _visibleElems().length;
 
   /// Insert [value] at visible index [i] with identity [dot]. Follows
@@ -269,6 +280,88 @@ class Fugue<T> {
       }
     }
     _visibleCache = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Crdt interface (immutable merge boundary)
+  // ---------------------------------------------------------------------------
+
+  @override
+  Fugue<T> get empty => Fugue<T>();
+
+  @override
+  Fugue<T> join(Fugue<T> other) => clone()..merge(other);
+
+  @override
+  Fugue<T> deltaCompose(Fugue<T> other) => join(other);
+
+  // ---------------------------------------------------------------------------
+  // Prune
+  // ---------------------------------------------------------------------------
+
+  /// Drop blocks that are fully tombstoned, causally [stable] (every element
+  /// dot observed everywhere), and have no surviving descendant block.
+  ///
+  /// Returns a new pruned instance. A block with any live element, or any kept
+  /// child block, is retained — its element positions still anchor live
+  /// descendants. Because a run compresses to one block with a deleted range,
+  /// a wholly-deleted paragraph is a single droppable unit, not thousands of
+  /// tombstone nodes.
+  Fugue<T> prune(Set<Dot> stable) {
+    // Block-level child index: parent block's start dot -> child blocks.
+    final blockChildren = <Dot, List<_Block<T>>>{};
+    final roots = <_Block<T>>[];
+    for (final c in _blocks.values) {
+      if (c.parent.isOrigin) {
+        roots.add(c);
+        continue;
+      }
+      final pb = _locate(c.parent);
+      if (pb == null) {
+        roots.add(c); // orphan (parent not yet delivered) — treat as root
+        continue;
+      }
+      (blockChildren[pb.$1.start] ??= <_Block<T>>[]).add(c);
+    }
+
+    // A block is droppable iff it has no live element, all its element dots are
+    // stable, and every child block is droppable. Iterative post-order so a
+    // long chain of small blocks can't overflow the stack.
+    final droppable = <Dot, bool>{};
+    final stack = <Object>[for (final r in roots) _ExpandBlock<T>(r)];
+    while (stack.isNotEmpty) {
+      final item = stack.removeLast();
+      if (item is _ExpandBlock<T>) {
+        stack.add(item.b); // compute after children
+        for (final c in blockChildren[item.b.start] ?? <_Block<T>>[]) {
+          stack.add(_ExpandBlock<T>(c));
+        }
+      } else {
+        final b = item as _Block<T>;
+        var drop = b.deleted.length == b.length; // no live offset
+        for (var k = 0; drop && k < b.length; k++) {
+          if (!stable.contains(b.dotAt(k))) drop = false;
+        }
+        if (drop) {
+          for (final c in blockChildren[b.start] ?? <_Block<T>>[]) {
+            if (droppable[c.start] != true) {
+              drop = false;
+              break;
+            }
+          }
+        }
+        droppable[b.start] = drop;
+      }
+    }
+
+    final kept = Fugue<T>();
+    for (final b in _blocks.values) {
+      if (droppable[b.start] == true) continue;
+      final nb = _Block<T>(b.start, b.parent, b.side, List<T>.of(b.values));
+      nb.deleted.addAll(b.deleted);
+      kept._index(nb);
+    }
+    return kept;
   }
 
   // ---------------------------------------------------------------------------
