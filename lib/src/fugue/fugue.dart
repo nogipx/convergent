@@ -245,6 +245,19 @@ class Fugue<T> implements Crdt<Fugue<T>> {
   /// Number of live (non-tombstoned) elements.
   int get length => _visibleElems().length;
 
+  /// Whether there are no live elements.
+  bool get isEmpty => _visibleElems().isEmpty;
+
+  /// Total stored elements, live + tombstoned (sum of block lengths). Useful
+  /// for GC accounting and diagnostics.
+  int get elementCount {
+    var n = 0;
+    for (final b in _blocks.values) {
+      n += b.length;
+    }
+    return n;
+  }
+
   /// Insert [value] at visible index [i] with identity [dot]. Follows
   /// Algorithm 1; coalesces into an existing block when [dot] continues a run.
   ///
