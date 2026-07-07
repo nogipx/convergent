@@ -270,7 +270,15 @@ class Fugue<T> implements Crdt<Fugue<T>> {
     final vis = _visibleElems(); // === _visibleCache
     final ii = i < 0 ? 0 : (i > vis.length ? vis.length : i);
     final leftOrigin = ii == 0 ? Dot.origin : vis[ii - 1].dot;
+    final (start, elem) = _place(leftOrigin, value, dot);
+    vis.insert(ii, elem);
+    return start;
+  }
 
+  /// Resolve placement for a new element whose LEFT origin is [leftOrigin]
+  /// (Dot.origin = "at the very start"), coalescing into the run when it
+  /// continues one, and return `(touched block start, new element)`.
+  (Dot, _Elem<T>) _place(Dot leftOrigin, T value, Dot dot) {
     final Dot parent;
     final Side side;
     if (!_hasRightChild(leftOrigin)) {
@@ -280,7 +288,6 @@ class Fugue<T> implements Crdt<Fugue<T>> {
       parent = _rightOrigin(leftOrigin);
       side = Side.left;
     }
-
     // Coalesce: a right-child that continues its parent's run (same replica,
     // next counter, parent is the run's last element) extends the block.
     if (side == Side.right && !parent.isOrigin) {
@@ -290,14 +297,93 @@ class Fugue<T> implements Crdt<Fugue<T>> {
           loc.$1.start.replica == dot.replica &&
           dot.counter == loc.$1.start.counter + loc.$1.length) {
         loc.$1.values.add(value);
-        vis.insert(ii, _Elem(loc.$1, loc.$1.length - 1));
-        return loc.$1.start;
+        return (loc.$1.start, _Elem(loc.$1, loc.$1.length - 1));
       }
     }
     final b = _Block<T>(dot, parent, side, <T>[value]);
     _index(b);
-    vis.insert(ii, _Elem(b, 0));
-    return b.start;
+    return (b.start, _Elem(b, 0));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Position-based API — stable cursors (paper §4: positions, not indices)
+  // ---------------------------------------------------------------------------
+
+  /// The stable [Dot] of the live element at visible [index].
+  ///
+  /// A [Dot] is a durable position: it keeps identifying the same element
+  /// across concurrent edits (and survives the element's own deletion as a
+  /// tombstone), so an editor pins cursors / selections / comments to it
+  /// rather than to an integer index.
+  Dot positionAt(int index) {
+    final vis = _visibleElems();
+    RangeError.checkValidIndex(index, vis, 'index', vis.length);
+    return vis[index].dot;
+  }
+
+  /// The visible index of element [dot], or `-1` if it is not a live element.
+  int indexOf(Dot dot) {
+    final vis = _visibleElems();
+    for (var i = 0; i < vis.length; i++) {
+      if (vis[i].dot == dot) return i;
+    }
+    return -1;
+  }
+
+  /// The value of element [dot] (live or tombstoned), or null if absent.
+  T? valueAt(Dot dot) {
+    final loc = _locate(dot);
+    return loc == null ? null : loc.$1.values[loc.$2];
+  }
+
+  /// Whether [dot] identifies a live (non-tombstoned) element.
+  bool isLive(Dot dot) {
+    final loc = _locate(dot);
+    return loc != null && !loc.$1.deleted.contains(loc.$2);
+  }
+
+  /// Insert [value] immediately after the position [anchor] (null / [Dot.origin]
+  /// = at the very start). Returns the touched block start.
+  ///
+  /// The anchor is a stable position: it works across concurrent edits and
+  /// even when the anchored element has since been deleted (a tombstone still
+  /// anchors positions). This is the primary edit entry point for an editor
+  /// that tracks positions rather than indices.
+  Dot insertAfter(Dot? anchor, T value, Dot dot) {
+    final leftOrigin = anchor ?? Dot.origin;
+    final vis = _visibleElems();
+    final (start, elem) = _place(leftOrigin, value, dot);
+    // Keep the projection valid: splice right after the anchor's visible
+    // position; rebuild lazily if the anchor isn't currently visible.
+    if (leftOrigin.isOrigin) {
+      vis.insert(0, elem);
+    } else {
+      var j = -1;
+      for (var k = 0; k < vis.length; k++) {
+        if (vis[k].dot == leftOrigin) {
+          j = k;
+          break;
+        }
+      }
+      if (j >= 0) {
+        vis.insert(j + 1, elem);
+      } else {
+        _visibleCache = null;
+      }
+    }
+    return start;
+  }
+
+  /// Tombstone the element [dot] (position-based delete). Returns the block
+  /// start, or null if the element is absent.
+  Dot? deleteDot(Dot dot) {
+    final loc = _locate(dot);
+    if (loc == null) return null;
+    if (!loc.$1.deleted.contains(loc.$2)) {
+      loc.$1.deleted.add(loc.$2);
+      _visibleCache = null;
+    }
+    return loc.$1.start;
   }
 
   /// Tombstone the live element at visible index [i]. Returns the start dot of
