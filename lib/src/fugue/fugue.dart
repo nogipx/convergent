@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
+import 'dart:collection';
+
 import 'dot.dart';
 
 /// A run-length block ("waypoint") of consecutively-authored elements.
@@ -9,9 +11,9 @@ import 'dot.dart';
 /// Element at [offset] `k` has dot `Dot(start.counter + k, start.replica)`,
 /// value `values[k]`, and is (implicitly) the RIGHT child of element `k-1`.
 /// Only element 0's placement is stored explicitly ([parent], [side]); the
-/// rest of the run is implied. Foreign inserts into the middle of a run do
-/// NOT split the block — they attach as explicit children of the relevant
-/// element dot and are interleaved with the run at traversal time.
+/// rest of the run is implied. A foreign insert into the middle of a run does
+/// NOT split the block — it attaches as an explicit child of the relevant
+/// element dot and is interleaved with the run at traversal time.
 class _Block<T> {
   _Block(this.start, this.parent, this.side, this.values);
   final Dot start;
@@ -46,38 +48,59 @@ class _Expand<T> {
 /// Element identity is a logical [Dot] (not an HLC), so a forward-typed run
 /// carries consecutive counters and collapses into one block.
 class Fugue<T> {
+  /// Blocks keyed by their start dot.
   final Map<Dot, _Block<T>> _blocks = <Dot, _Block<T>>{};
+
+  /// Parent element dot → child blocks (both sides). This is what makes the
+  /// per-element children lookup O(children) instead of O(all blocks).
+  final Map<Dot, List<_Block<T>>> _children = <Dot, List<_Block<T>>>{};
+
+  /// Per-replica `start.counter → block`, for O(log N) [_locate] of the block
+  /// holding an arbitrary element dot. Blocks of one replica never overlap.
+  final Map<String, SplayTreeMap<int, _Block<T>>> _byReplica =
+      <String, SplayTreeMap<int, _Block<T>>>{};
+
+  /// Memoised visible projection; nulled on every mutation.
+  List<_Elem<T>>? _visibleCache;
+
+  void _index(_Block<T> b) {
+    _blocks[b.start] = b;
+    (_children[b.parent] ??= <_Block<T>>[]).add(b);
+    (_byReplica[b.start.replica] ??= SplayTreeMap<int, _Block<T>>())[
+        b.start.counter] = b;
+  }
 
   Fugue<T> clone() {
     final c = Fugue<T>();
     for (final b in _blocks.values) {
       final nb = _Block<T>(b.start, b.parent, b.side, List<T>.of(b.values));
       nb.deleted.addAll(b.deleted);
-      c._blocks[b.start] = nb;
+      c._index(nb);
     }
     return c;
   }
 
   // ---------------------------------------------------------------------------
-  // Navigation (correctness-first; O(N) scans, indexed later)
+  // Navigation
   // ---------------------------------------------------------------------------
 
-  /// Locate the block + offset holding element [d], or null.
+  /// Locate the block + offset holding element [d], or null. O(log N).
   (_Block<T>, int)? _locate(Dot d) {
-    for (final b in _blocks.values) {
-      if (b.start.replica == d.replica &&
-          d.counter >= b.start.counter &&
-          d.counter < b.start.counter + b.length) {
-        return (b, d.counter - b.start.counter);
-      }
-    }
-    return null;
+    final tree = _byReplica[d.replica];
+    if (tree == null) return null;
+    final key = tree.lastKeyBefore(d.counter + 1); // greatest key <= d.counter
+    if (key == null) return null;
+    final b = tree[key]!;
+    final off = d.counter - b.start.counter;
+    return (off >= 0 && off < b.length) ? (b, off) : null;
   }
 
   List<_Elem<T>> _leftChildren(Dot d) {
+    final kids = _children[d];
+    if (kids == null) return const [];
     final out = <_Elem<T>>[];
-    for (final b in _blocks.values) {
-      if (b.parent == d && b.side == Side.left) out.add(_Elem(b, 0));
+    for (final b in kids) {
+      if (b.side == Side.left) out.add(_Elem(b, 0));
     }
     out.sort((x, y) => x.dot.compareTo(y.dot));
     return out;
@@ -87,8 +110,11 @@ class Fugue<T> {
   /// natural continuation (next offset in [d]'s own block), merged by dot.
   List<_Elem<T>> _rightChildren(Dot d) {
     final out = <_Elem<T>>[];
-    for (final b in _blocks.values) {
-      if (b.parent == d && b.side == Side.right) out.add(_Elem(b, 0));
+    final kids = _children[d];
+    if (kids != null) {
+      for (final b in kids) {
+        if (b.side == Side.right) out.add(_Elem(b, 0));
+      }
     }
     if (!d.isOrigin) {
       final loc = _locate(d);
@@ -105,8 +131,11 @@ class Fugue<T> {
       final loc = _locate(d);
       if (loc != null && loc.$2 < loc.$1.length - 1) return true;
     }
-    for (final b in _blocks.values) {
-      if (b.parent == d && b.side == Side.right) return true;
+    final kids = _children[d];
+    if (kids != null) {
+      for (final b in kids) {
+        if (b.side == Side.right) return true;
+      }
     }
     return false;
   }
@@ -127,10 +156,16 @@ class Fugue<T> {
   // ---------------------------------------------------------------------------
 
   List<_Elem<T>> _visibleElems() {
+    final cached = _visibleCache;
+    if (cached != null) return cached;
+
     final result = <_Elem<T>>[];
     final roots = <_Elem<T>>[];
-    for (final b in _blocks.values) {
-      if (b.parent == Dot.origin) roots.add(_Elem(b, 0));
+    final originKids = _children[Dot.origin];
+    if (originKids != null) {
+      for (final b in originKids) {
+        roots.add(_Elem(b, 0));
+      }
     }
     roots.sort((x, y) => x.dot.compareTo(y.dot));
 
@@ -155,7 +190,7 @@ class Fugue<T> {
         stack.add(_Expand<T>(lefts[i]));
       }
     }
-    return result;
+    return _visibleCache = result;
   }
 
   // ---------------------------------------------------------------------------
@@ -168,10 +203,13 @@ class Fugue<T> {
   int get length => _visibleElems().length;
 
   /// Insert [value] at visible index [i] with identity [dot]. Follows
-  /// Algorithm 1; coalesces into an existing block when [dot] continues a
-  /// run.
+  /// Algorithm 1; coalesces into an existing block when [dot] continues a run.
+  ///
+  /// The new element always lands at visible index [i], so the memoised
+  /// projection is spliced in place rather than rebuilt: an append is O(1)
+  /// amortised, a middle insert is an O(N) list shift (no re-traversal).
   void insert(int i, T value, Dot dot) {
-    final vis = _visibleElems();
+    final vis = _visibleElems(); // === _visibleCache
     final ii = i < 0 ? 0 : (i > vis.length ? vis.length : i);
     final leftOrigin = ii == 0 ? Dot.origin : vis[ii - 1].dot;
 
@@ -189,24 +227,27 @@ class Fugue<T> {
     // next counter, parent is the run's last element) extends the block.
     if (side == Side.right && !parent.isOrigin) {
       final loc = _locate(parent);
-      if (loc != null) {
-        final (b, off) = loc;
-        if (off == b.length - 1 &&
-            b.start.replica == dot.replica &&
-            dot.counter == b.start.counter + b.length) {
-          b.values.add(value);
-          return;
-        }
+      if (loc != null &&
+          loc.$2 == loc.$1.length - 1 &&
+          loc.$1.start.replica == dot.replica &&
+          dot.counter == loc.$1.start.counter + loc.$1.length) {
+        loc.$1.values.add(value);
+        vis.insert(ii, _Elem(loc.$1, loc.$1.length - 1));
+        return;
       }
     }
-    _blocks[dot] = _Block<T>(dot, parent, side, <T>[value]);
+    final b = _Block<T>(dot, parent, side, <T>[value]);
+    _index(b);
+    vis.insert(ii, _Elem(b, 0));
   }
 
   /// Tombstone the live element at visible index [i].
   void delete(int i) {
     final vis = _visibleElems();
     if (i < 0 || i >= vis.length) return;
-    vis[i].block.deleted.add(vis[i].offset);
+    final e = vis[i];
+    e.block.deleted.add(e.offset);
+    vis.removeAt(i);
   }
 
   /// Merge another replica's state: union blocks by start dot (the longer run
@@ -216,9 +257,10 @@ class Fugue<T> {
     for (final ob in other._blocks.values) {
       final mine = _blocks[ob.start];
       if (mine == null) {
-        final nb = _Block<T>(ob.start, ob.parent, ob.side, List<T>.of(ob.values));
+        final nb =
+            _Block<T>(ob.start, ob.parent, ob.side, List<T>.of(ob.values));
         nb.deleted.addAll(ob.deleted);
-        _blocks[ob.start] = nb;
+        _index(nb);
       } else {
         if (ob.length > mine.length) {
           mine.values.addAll(ob.values.sublist(mine.length));
@@ -226,6 +268,78 @@ class Fugue<T> {
         mine.deleted.addAll(ob.deleted);
       }
     }
+    _visibleCache = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Codec — one row per block (run-length): the placement metadata is stored
+  // once per run, and deletions as [start, len] ranges. This is where the
+  // save-size win over one-node-per-element lands.
+  // ---------------------------------------------------------------------------
+
+  /// Encode to a JSON-compatible structure. [encodeValue] maps one element
+  /// value to a JSON-compatible form.
+  Object encode(Object? Function(T) encodeValue) {
+    final rows = <Object?>[];
+    for (final b in _blocks.values) {
+      rows.add(<Object?>[
+        b.start.counter,
+        b.start.replica,
+        b.parent.counter,
+        b.parent.replica,
+        b.side == Side.right ? 1 : 0,
+        [for (final v in b.values) encodeValue(v)],
+        _encodeDeleted(b.deleted),
+      ]);
+    }
+    return <String, Object?>{'v': 1, 'b': rows};
+  }
+
+  static List<int> _encodeDeleted(Set<int> deleted) {
+    if (deleted.isEmpty) return const [];
+    final sorted = deleted.toList()..sort();
+    final out = <int>[];
+    var start = sorted.first;
+    var prev = sorted.first;
+    for (var i = 1; i < sorted.length; i++) {
+      if (sorted[i] == prev + 1) {
+        prev = sorted[i];
+        continue;
+      }
+      out
+        ..add(start)
+        ..add(prev - start + 1);
+      start = sorted[i];
+      prev = sorted[i];
+    }
+    return out
+      ..add(start)
+      ..add(prev - start + 1);
+  }
+
+  /// Decode a structure produced by [encode]. [decodeValue] is the inverse of
+  /// the encoder passed to [encode].
+  static Fugue<T> decode<T>(Object json, T Function(Object?) decodeValue) {
+    final map = json as Map;
+    final f = Fugue<T>();
+    for (final row in map['b'] as List) {
+      final r = row as List;
+      final start = Dot(r[0] as int, r[1] as String);
+      final parent = Dot(r[2] as int, r[3] as String);
+      final side = (r[4] as int) == 1 ? Side.right : Side.left;
+      final values = <T>[for (final v in r[5] as List) decodeValue(v)];
+      final b = _Block<T>(start, parent, side, values);
+      final del = r[6] as List;
+      for (var i = 0; i + 1 < del.length; i += 2) {
+        final s = del[i] as int;
+        final len = del[i + 1] as int;
+        for (var k = 0; k < len; k++) {
+          b.deleted.add(s + k);
+        }
+      }
+      f._index(b);
+    }
+    return f;
   }
 
   /// Number of stored blocks — for coalescing assertions in tests.
