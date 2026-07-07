@@ -49,6 +49,38 @@ class _ExpandBlock<T> {
   final _Block<T> b;
 }
 
+/// One operation in a [Fugue.applyOps] batch.
+sealed class FugueOp<T> {
+  const FugueOp();
+
+  /// Insert [value] at visible index [at].
+  const factory FugueOp.insert(int at, T value) = FugueInsert<T>;
+
+  /// Remove the live element at visible index [at].
+  const factory FugueOp.removeAt(int at) = FugueRemoveAt<T>;
+}
+
+/// An insert op — see [FugueOp.insert].
+final class FugueInsert<T> extends FugueOp<T> {
+  /// Creates an insert of [value] at [at].
+  const FugueInsert(this.at, this.value);
+
+  /// Target visible index.
+  final int at;
+
+  /// Value to insert.
+  final T value;
+}
+
+/// A remove op — see [FugueOp.removeAt].
+final class FugueRemoveAt<T> extends FugueOp<T> {
+  /// Creates a remove at [at].
+  const FugueRemoveAt(this.at);
+
+  /// Target visible index.
+  final int at;
+}
+
 /// The optimised, run-length ("waypoint") Fugue list CRDT — a faithful
 /// implementation of Algorithm 1 (Weidner & Kleppmann, TPDS 2025) that stores
 /// contiguously-typed runs as single blocks instead of one node per element.
@@ -219,7 +251,9 @@ class Fugue<T> implements Crdt<Fugue<T>> {
   /// The new element always lands at visible index [i], so the memoised
   /// projection is spliced in place rather than rebuilt: an append is O(1)
   /// amortised, a middle insert is an O(N) list shift (no re-traversal).
-  void insert(int i, T value, Dot dot) {
+  /// Returns the start dot of the block that now holds the new element (the
+  /// coalesced block's start, or the fresh block's own dot).
+  Dot insert(int i, T value, Dot dot) {
     final vis = _visibleElems(); // === _visibleCache
     final ii = i < 0 ? 0 : (i > vis.length ? vis.length : i);
     final leftOrigin = ii == 0 ? Dot.origin : vis[ii - 1].dot;
@@ -244,21 +278,54 @@ class Fugue<T> implements Crdt<Fugue<T>> {
           dot.counter == loc.$1.start.counter + loc.$1.length) {
         loc.$1.values.add(value);
         vis.insert(ii, _Elem(loc.$1, loc.$1.length - 1));
-        return;
+        return loc.$1.start;
       }
     }
     final b = _Block<T>(dot, parent, side, <T>[value]);
     _index(b);
     vis.insert(ii, _Elem(b, 0));
+    return b.start;
   }
 
-  /// Tombstone the live element at visible index [i].
-  void delete(int i) {
+  /// Tombstone the live element at visible index [i]. Returns the start dot of
+  /// the affected block, or null when [i] is out of range.
+  Dot? delete(int i) {
     final vis = _visibleElems();
-    if (i < 0 || i >= vis.length) return;
+    if (i < 0 || i >= vis.length) return null;
     final e = vis[i];
     e.block.deleted.add(e.offset);
     vis.removeAt(i);
+    return e.block.start;
+  }
+
+  /// Apply a batch of [ops] locally (minting dots from [clk]) and return the
+  /// DELTA to ship to peers: the blocks created or grown by this batch, at
+  /// their final state.
+  ///
+  /// Because each delta block keeps its original start dot, a peer's [join]
+  /// extends the matching block by max-length and OR-merges tombstones — it
+  /// never creates a second node for an element already implied by a run, so
+  /// the delta is a well-formed δ-state fragment.
+  Fugue<T> applyOps(List<FugueOp<T>> ops, LamportClock clk) {
+    final touched = <Dot>{};
+    for (final op in ops) {
+      switch (op) {
+        case FugueInsert<T>(:final at, :final value):
+          touched.add(insert(at, value, clk.tick()));
+        case FugueRemoveAt<T>(:final at):
+          final s = delete(at);
+          if (s != null) touched.add(s);
+      }
+    }
+    final delta = Fugue<T>();
+    for (final start in touched) {
+      final b = _blocks[start];
+      if (b == null) continue;
+      final nb = _Block<T>(b.start, b.parent, b.side, List<T>.of(b.values));
+      nb.deleted.addAll(b.deleted);
+      delta._index(nb);
+    }
+    return delta;
   }
 
   /// Merge another replica's state: union blocks by start dot (the longer run
