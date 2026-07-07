@@ -103,6 +103,15 @@ class SeqOpRemove<T> extends SeqOp<T> {
 /// (Weidner, Gentle, Kleppmann, *Fugue: A Basis for Elegant CRDTs*,
 /// PaPoC 2023).
 ///
+/// > **Superseded by `Fugue` (`package:convergent/fugue.dart`).** `Fugue` is
+/// > the optimised, run-length ("waypoint") implementation of the full
+/// > Algorithm 1 from *The Art of the Fugue* (TPDS 2025): a forward-typed run
+/// > is one block, not one node per character (≈9 vs 618 bytes/char), and it
+/// > is a state-based CRDT with a delta-producing `applyOps`. Prefer it for
+/// > new code. [Sequence] is kept because it is **HLC-based** — it shares the
+/// > library's HLC causal context, [DotSet] pruning, and one clock across all
+/// > CRDTs — whereas `Fugue` runs a separate logical (Lamport) clock.
+///
 /// State is a position tree keyed by HLC dots:
 ///
 /// ```
