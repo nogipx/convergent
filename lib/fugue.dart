@@ -9,5 +9,7 @@
 /// distinct from the HLC-based dots the rest of the library uses.
 library;
 
+export 'src/codec/codec.dart' show Codec, StringCodec, IntCodec, DoubleCodec, BoolCodec, JsonCodec;
 export 'src/fugue/dot.dart';
 export 'src/fugue/fugue.dart';
+export 'src/fugue/fugue_codec.dart';

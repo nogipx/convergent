@@ -4,8 +4,10 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:convergent/src/codec/codec.dart';
 import 'package:convergent/src/fugue/dot.dart';
 import 'package:convergent/src/fugue/fugue.dart';
+import 'package:convergent/src/fugue/fugue_codec.dart';
 import 'package:test/test.dart';
 
 import 'reference.dart';
@@ -83,6 +85,19 @@ void main() {
         }
         expect(roundtrip(f).values, r.values(), reason: 'seed=$seed');
       }
+    });
+
+    test('FugueCodec<T>(Codec<T>) round-trips via the element codec', () {
+      const codec = FugueCodec<String>(StringCodec());
+      final clk = LamportClock('A');
+      final f = Fugue<String>();
+      for (final ch in 'the quick brown fox'.split('')) {
+        f.insert(f.length, ch, clk.tick());
+      }
+      f.delete(3);
+      final json = jsonDecode(jsonEncode(codec.encode(f))) as Object;
+      final back = codec.decode(json);
+      expect(back.values, f.values);
     });
   });
 }
