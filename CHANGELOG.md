@@ -3,6 +3,14 @@
 Correctness fixes from the 0.5.0 audit. One change is **breaking**
 (`PnCounter` delta producers move from static to instance methods).
 
+### Added
+
+- **`Fugue.orphanBlockCount`** — a diagnostic getter counting blocks whose
+  parent element is absent: either deltas delivered ahead of their parent
+  (transient, heals on merge) or children of pruned blocks (permanent —
+  indicates a violated prune barrier). Non-empty after a full sync means
+  investigate. O(N), allocation-free, uncached.
+
 ### Changed (breaking)
 
 - **`PnCounter.deltaIncrement` / `deltaDecrement` are now instance methods**
@@ -19,6 +27,16 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
   double-count. Migration: replace `PnCounter.deltaIncrement(hlc, n)` with
   `counter.deltaIncrement(hlc, n)`, producing each delta against the counter
   state it applies to.
+
+### Documentation
+
+- **`Fugue.prune` barrier requirement.** The doc now spells out the full
+  caller invariant: because a tombstone still anchors positions and
+  `rightOrigin` walks the tombstone-inclusive traversal, `stable` must also
+  guarantee that every delta parented on the pruned blocks' tombstones has
+  been delivered everywhere, and prune must be applied with the same
+  `stable` set on all replicas. Violating it leaves permanently unreachable
+  blocks (detectable via `orphanBlockCount`) and breaks convergence.
 
 ### Fixed
 

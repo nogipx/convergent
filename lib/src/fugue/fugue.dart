@@ -260,6 +260,36 @@ class Fugue<T> implements Crdt<Fugue<T>> {
     return n;
   }
 
+  /// Blocks whose parent element is not present in this state — either
+  /// deltas delivered ahead of their parent (transient, heals on merge)
+  /// or children of pruned blocks (permanent; indicates a violated
+  /// prune barrier). Non-empty AFTER a full sync = investigate.
+  ///
+  /// Counts every non-origin block whose parent [Dot] a [_locate] fails to
+  /// resolve. O(N) over blocks and allocation-free (the `_locate` lookup is
+  /// inlined so no record is materialised per block); not cached.
+  int get orphanBlockCount {
+    var n = 0;
+    for (final b in _blocks.values) {
+      final p = b.parent;
+      if (p.isOrigin) continue;
+      final tree = _byReplica[p.replica];
+      if (tree == null) {
+        n++;
+        continue;
+      }
+      final key = tree.lastKeyBefore(p.counter + 1);
+      if (key == null) {
+        n++;
+        continue;
+      }
+      final pb = tree[key]!;
+      final off = p.counter - pb.start.counter;
+      if (off < 0 || off >= pb.length) n++;
+    }
+    return n;
+  }
+
   /// Insert [value] at visible index [i] with identity [dot]. Follows
   /// Algorithm 1; coalesces into an existing block when [dot] continues a run.
   ///
@@ -479,6 +509,19 @@ class Fugue<T> implements Crdt<Fugue<T>> {
   /// descendants. Because a run compresses to one block with a deleted range,
   /// a wholly-deleted paragraph is a single droppable unit, not thousands of
   /// tombstone nodes.
+  ///
+  /// **Caller invariant.** Every replica must have observed every dot in
+  /// [stable] AND no future write may reference a dot in [stable] from an
+  /// ancestral state. For a [Fugue], [stable] must *additionally* guarantee
+  /// that every delta referencing these dots — including inserts parented on
+  /// their tombstones (a tombstone still anchors positions; [_rightOrigin]
+  /// walks the tombstone-inclusive traversal) — has been delivered to every
+  /// replica, and prune must be applied with the same [stable] set on all
+  /// replicas. Violating this leaves permanently unreachable ("orphan")
+  /// blocks and breaks convergence of visible values: the pruning replica
+  /// drops a block another replica just anchored a child on, so that child
+  /// is visible on the peer and invisible here, forever. See
+  /// [orphanBlockCount] to detect the condition.
   Fugue<T> prune(Set<Dot> stable) {
     // Block-level child index: parent block's start dot -> child blocks.
     final blockChildren = <Dot, List<_Block<T>>>{};

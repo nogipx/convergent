@@ -455,7 +455,11 @@ final bytes  = const FugueTextBinaryCodec().encode(f); // compact bytes
   `applyOps` returns a δ-fragment such that `base.join(δ)` reconstructs the
   applied state.
 - **Pruning**: `prune(Set<Dot> stable)` drops fully-tombstoned, causally
-  stable, anchorless blocks (block-granular).
+  stable, anchorless blocks (block-granular). `stable` must additionally
+  guarantee every delta parented on those blocks' tombstones has been
+  delivered everywhere (a tombstone still anchors positions); violating the
+  barrier leaves permanently unreachable blocks — surfaced by
+  `orphanBlockCount`.
 - **Codecs**: `FugueCodec<T>(Codec<T>)` (JSON) and `FugueTextBinaryCodec`
   (replica-id interning + LEB128 varints + one packed UTF-8 string per run;
   ~2 bytes/char, encode/decode ~2 ms for a 20k-char doc).
