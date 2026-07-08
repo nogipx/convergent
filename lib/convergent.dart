@@ -14,7 +14,6 @@ export 'src/g_set.dart';
 export 'src/or_set.dart';
 export 'src/pn_counter.dart';
 export 'src/crdt_map.dart';
-export 'src/sequence.dart';
 
 // Codecs (JSON-compatible serialisation).
 export 'src/codec/codec.dart';
@@ -27,4 +26,3 @@ export 'src/codec/g_set_codec.dart';
 export 'src/codec/or_set_codec.dart';
 export 'src/codec/pn_counter_codec.dart';
 export 'src/codec/crdt_map_codec.dart';
-export 'src/codec/sequence_codec.dart';

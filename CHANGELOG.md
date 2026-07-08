@@ -1,7 +1,20 @@
 ## 0.6.0
 
-Correctness fixes from the 0.5.0 audit. One change is **breaking**
-(`PnCounter` delta producers move from static to instance methods).
+Correctness fixes from the 0.5.0 audit, plus removal of the legacy
+`Sequence` list CRDT. Two **breaking** changes: `Sequence` is gone (use
+`Fugue`), and `PnCounter` delta producers move from static to instance
+methods.
+
+### Removed
+
+- **`Sequence<T>`, `SeqEntry`, `SeqOp`, and `SequenceCodec` are removed.**
+  `Fugue` supersedes them on every axis (correct non-interleaving, O(log N)
+  locate, position API, batched `applyOps`, ~2 vs ~618 bytes/char), and its
+  only distinguishing trait — sharing the library's HLC causal context /
+  `DotSet` pruning — is a convenience achievable with `Fugue` + an
+  application-level `Hlc` stamp, not a requirement. Maintaining a second list
+  CRDT (a proven bug source) had no offsetting real-world use case.
+  Migration: use `Fugue<T>` from `package:convergent/fugue.dart`.
 
 ### Added
 
@@ -30,12 +43,13 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
 
 ### Changed
 
-- **Canonical encoding.** `Fugue.encode`, `Fugue.rawBlocks` (hence
-  `FugueTextBinaryCodec`), and `SequenceCodec.encode` now emit blocks /
-  entries in start-dot / id order instead of map-iteration order. The
-  decoded value is unchanged, but the same converged state now serialises to
-  byte-identical output on every replica — enabling content-hashing and
-  snapshot dedup. O(N log N) at encode only.
+- **Canonical encoding.** `Fugue.encode` and `Fugue.rawBlocks` (hence
+  `FugueTextBinaryCodec`) now emit blocks in start-dot order instead of
+  map-iteration order. The decoded value is unchanged, but the same converged
+  state serialises to byte-identical output on every replica — so a snapshot
+  has a stable content hash, enabling dedup and O(1) "are we in sync?"
+  handshakes. Cost is proportional to block count (coalesced runs keep it
+  low), at encode only.
 
 ### Documentation
 
@@ -89,14 +103,6 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
   Decode now compares the recovered rune count to the stored count and
   throws `FormatException` on mismatch.
 
-- **`Sequence.join` divergent-metadata hardening.** On an id collision the
-  join OR-merged the tombstone bit but took one side's `(parent, side,
-  value)` blindly. If a dot was ever minted twice with different metadata
-  (the misuse `Fugue`'s duplicate-dot guard catches) the divergence was
-  silently locked in — and the join was not even commutative. `join` now
-  asserts (checked mode) that shared-dot metadata matches, symmetric to the
-  `Fugue` guard.
-
 - **`Fugue.insert` duplicate-dot hardening.** A local insert with an
   already-used dot (a replica restarted without seeding its clock from
   `Fugue.dots`, or two devices sharing a replica id) overwrote a block while
@@ -105,16 +111,6 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
   when a dot already indexes a block. The assert cannot fire on legitimate
   paths (merge only indexes behind a `mine == null` check; codecs build fresh
   instances). README documents the clock-seeding ritual for restart.
-
-- **`Sequence.append` / `prepend` cold-hint poisoning.** On a cold (null)
-  first/last-visible hint over a non-empty sequence, `append` recorded the
-  just-appended tail as the first-visible hint (and `prepend` the mirror);
-  a subsequent `prepend`/`append` then attached to the wrong edge, so the
-  element landed near the tail instead of index 0 (or at index 1 instead of
-  the tail). Every constructor except `append`/`prepend` yields null hints,
-  so the poisoning was reachable from normal code. Convergence was
-  unaffected; local visible placement (strong list spec condition (b)) is
-  restored. Only an insert into an EMPTY sequence now defines both edges.
 
 ### Tests
 

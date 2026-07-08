@@ -5,7 +5,7 @@
 // Fugue must have value-based ==/hashCode like every other CRDT in the
 // package: without it, Mutator.hasPendingDelta (which compares the
 // accumulator to state.empty) is always true, and CrdtMap<K, Fugue> gets
-// identity equality inconsistent with Sequence.
+// identity equality inconsistent with the HLC-based types.
 import 'package:convergent/convergent.dart' show Mutator;
 import 'package:convergent/fugue.dart';
 import 'package:test/test.dart';

@@ -3,7 +3,7 @@
 Convergent Replicated Data Types for Dart.
 
 Self-contained, dependency-free primitives — registers, sets, counters,
-maps, and list / text CRDTs (**`Fugue`** and `Sequence`) — together with
+maps, and a list / text CRDT (**`Fugue`**) — together with
 the supporting clock and causal-context machinery. Every type implements a shared
 `Crdt<Self>` interface with three operations:
 
@@ -16,8 +16,8 @@ the supporting clock and causal-context machinery. Every type implements a share
 Replicas converge under any delivery order, with arbitrary
 duplicates, with no central coordinator.
 
-**Form.** State-based / Δ-state. `MvRegister`, `LwwRegister`, `OrSet`
-and `Sequence` follow the Δ-state formulation of Almeida, Shapiro,
+**Form.** State-based / Δ-state. `MvRegister`, `LwwRegister` and
+`OrSet` follow the Δ-state formulation of Almeida, Shapiro,
 Baquero (JPDC 2018), embedding the causal context directly in the
 state so that `join` is a pure 2-argument function with no
 out-of-band delivery guarantees. `GSet` and `PnCounter` are classical
@@ -38,8 +38,8 @@ License: MIT.
 - `CausalContext` — `Map<NodeId, max(Hlc)>` watermark vector clock
   (used by `MvRegister`'s writer contexts).
 - `DotSet` — `Set<Hlc>` with explicit dot membership (used by
-  `OrSet` and `Sequence`'s implicit context; the canonical Almeida
-  2018 §3.4 representation).
+  `OrSet`'s implicit context; the canonical Almeida 2018 §3.4
+  representation).
 
 **Common interfaces:**
 - `Crdt<Self extends Crdt<Self>>` — `join` + `empty` + `deltaCompose`.
@@ -55,11 +55,8 @@ License: MIT.
   add/remove.
 - `PnCounter` — positive/negative counter, per-replica G-Counters.
 - `CrdtMap<K, V extends Crdt<V>>` — per-key join over nested CRDTs.
-- `Fugue<T>` — optimised list / text CRDT; run-length ("waypoint")
-  Fugue in `package:convergent/fugue.dart`. **Recommended** for
-  lists / text.
-- `Sequence<T>` — ordered Δ-state Fugue list / text CRDT (HLC-based;
-  superseded by `Fugue` for new code).
+- `Fugue<T>` — list / text CRDT; run-length ("waypoint") Fugue in
+  `package:convergent/fugue.dart`.
 
 **Δ-state shipping:**
 - `Mutator<C>` — per-replica delta accumulator. Tracks current
@@ -135,8 +132,8 @@ class DotSet {
 Explicit set of observed `Hlc` dots. Unlike `CausalContext`, which
 summarises observations as a max watermark per node, `DotSet`
 records every dot individually. This is the representation that
-Almeida 2018 §3.4 requires for correct Δ-state OR-Set / Sequence
-delta composition — the watermark form collapses sibling same-node
+Almeida 2018 §3.4 requires for correct Δ-state OR-Set delta
+composition — the watermark form collapses sibling same-node
 dots into `max(h1, h2)`, which would erroneously cross-tombstone
 legitimate concurrent same-node entries.
 
@@ -184,7 +181,7 @@ abstract interface class Pruneable<Self> {
 }
 ```
 
-Δ-state CRDTs with explicit dot-set contexts (`OrSet`, `Sequence`)
+Δ-state CRDTs with an explicit dot-set context (`OrSet`)
 keep every observed dot forever; without pruning, the context
 grows linearly with history. **Causal stability** (Almeida 2018
 §5): once every replica has observed dot `d` AND `d` is not
@@ -419,11 +416,10 @@ Combine with `OrSet<K>` to support deletion.
 `package:convergent/fugue.dart`. A run-length ("waypoint") implementation
 of the full Fugue algorithm from *The Art of the Fugue: Minimizing
 Interleaving in Collaborative Text Editing* (Weidner & Kleppmann, IEEE TPDS
-2025). Prefer it over `Sequence` for new code: a contiguously-typed run is
-stored as a single block instead of one node per character (~2 bytes/char
-through the binary codec, vs ~618 for one-node-per-char), while remaining a
-faithful **state-based** CRDT (the paper's own reformulation of the
-algorithm).
+2025). A contiguously-typed run is stored as a single block instead of one
+node per character (~2 bytes/char through the binary codec, vs ~618 for
+one-node-per-char), while remaining a faithful **state-based** CRDT (the
+paper's own reformulation of the algorithm).
 
 Identity is a **logical `Dot(counter, replica)`**, not an `Hlc` — a logical
 counter is what lets a run share consecutive counters and coalesce into one
@@ -477,77 +473,10 @@ final bytes  = const FugueTextBinaryCodec().encode(f); // compact bytes
   ~2 bytes/char, encode/decode ~2 ms for a 20k-char doc).
 
 Because `Fugue` runs a **separate logical clock**, it does not share the
-library's HLC causal context or `DotSet` pruning — that is the one reason
-`Sequence` is retained.
-
----
-
-## `Sequence<T>` — Ordered Δ-state CRDT (Fugue)
-
-> **Superseded by `Fugue` (above) for new code.** `Sequence` is retained for
-> HLC-integrated use — it shares the library's causal context and `DotSet`
-> pruning, whereas `Fugue` runs a separate logical clock.
-
-Position tree of `SeqEntry<T>` keyed by `Hlc` dots. Derived from
-Weidner, Gentle, Kleppmann, *Fugue: A Basis for Elegant CRDTs*
-(PaPoC 2023) via Almeida 2018's op-based → state-based
-transformation. The first Dart Fugue we are aware of, and the
-only one in pure Δ-state form (no causal-delivery requirement
-on the transport).
-
-State:
-
-```
-chars : Map<Hlc, SeqEntry<T>>     // all observed entries (live + tombstoned)
-```
-
-Each entry carries `id`, `parent`, `side` (`LEFT`/`RIGHT`),
-`value`, and a `tombstoned` flag. Tombstoned entries are kept
-because their position is still required to resolve their
-descendants; they are hidden from the user-visible read.
-
-```dart
-class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
-  // Full-state mutators.
-  Sequence<T> insertAt(int index, T value, Hlc dot);
-  Sequence<T> removeAt(int index);
-
-  // Δ-state delta producers.
-  Sequence<T>  deltaInsertAt(int index, T value, Hlc dot);
-  Sequence<T>? deltaRemoveAt(int index);
-
-  List<T> get values;
-  int get length;
-  T? operator [](int index);
-}
-```
-
-**Insert rule** (Fugue Algorithm 1):
-
-- Index `0` on a non-empty list → LEFT child of the leftmost
-  visible entry.
-- Index `n` (append) → RIGHT child of the rightmost visible entry.
-- Index `i` in the middle:
-  - If the left neighbour at `i-1` has no right-side children
-    observed, insert as RIGHT child of the left neighbour.
-  - Otherwise insert as LEFT child of the right neighbour at `i`.
-
-**Read**: in-order DFS — LEFT children sorted by id, then the
-parent (when not tombstoned), then RIGHT children sorted by id.
-Roots (`parent == null`) traverse in id order.
-
-**Join**: per-id union with tombstone OR-merge. Every observed
-dot lives in `chars`, so the same explicit-context argument that
-makes `OrSet` correct also makes `Sequence` correct;
-`deltaCompose` simply delegates to `join`.
-
-**Pruning**: drops tombstoned entries whose ids are in `stable`
-AND have no live descendants. Live entries are never dropped
-(their position metadata anchors their children).
-
-Text editing is a special case — `Sequence<int>` (codepoints) or
-`Sequence<String>` (graphemes). Concurrent insertions interleave
-deterministically via the side-and-id ordering.
+library's HLC causal context or `DotSet` pruning. If you need a global causal
+timeline across the list and the HLC-based types, stamp an `Hlc` alongside
+each `Fugue` op at the application layer — the `Dot` keeps the position, the
+`Hlc` records the causal order.
 
 ---
 
@@ -693,7 +622,6 @@ Codec table:
 | `OrSetCodec<T>(Codec<T>)` | `OrSet<T>` | `{v, dots:[{value, hlc}…], ctx}` |
 | `PnCounterCodec` | `PnCounter` | `{v, state:{nodeId:[pos,neg]…}}` |
 | `CrdtMapCodec<K, V>(Codec<K>, Codec<V>)` | `CrdtMap<K, V>` | `{v, entries:[[k, v]…]}` |
-| `SequenceCodec<T>(Codec<T>)` | `Sequence<T>` | `{v, chars:[{id, parent, side, value, tomb?}…]}` |
 
 ---
 
