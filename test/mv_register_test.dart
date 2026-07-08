@@ -181,6 +181,28 @@ void main() {
       expect(after.allValues.toSet(), equals({'a', 'c'}));
     });
 
+    test('associativity holds when a writer supersedes without transitive '
+        'context', () {
+      final h1 = Hlc(1, 0, 'N1');
+      final h2 = Hlc(2, 0, 'N2');
+      final h3 = Hlc(3, 0, 'N3');
+      final a = MvRegister.single('v1', h1);
+      // N2 saw v1:
+      final b = MvRegister<String>.empty().set(
+        'v2',
+        h2,
+        const CausalContext.empty().advance(h1),
+      );
+      // N3 received the register in state {v2} and uses set(), whose stored
+      // context must transitively cover h1 even though N3 only names h2:
+      final n3ctx = const CausalContext.empty().advance(h2);
+      final c = a.join(b).set('v3', h3, n3ctx); // set() on the observed state
+      final left = a.join(b).join(c);
+      final right = a.join(b.join(c));
+      expect(left, right);
+      expect(left.allValues, ['v3']);
+    });
+
     test('any delivery order yields the same register (convergence)', () {
       // Construct N independent registers and shuffle the join order. All
       // permutations must produce equal results (consequence of

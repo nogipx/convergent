@@ -245,6 +245,17 @@ result = MvRegister(S)
 Each `TaggedValue` carries its writer's `CausalContext`, so dominance
 can be computed from the union alone — no externally-tracked state.
 
+**Transitive-context invariant.** Because dominance is judged per-value
+via the embedded context, `join` is only associative when each stored
+context is *transitively closed*: a write that supersedes value `w` must
+carry a context that covers not just `w`'s hlc but every value `w` itself
+superseded. `set` guarantees this by absorbing the context of every value
+it supersedes. `deltaSet` cannot see those values, so **the caller must
+supply a `writerContext` that already dominates the contexts of all
+superseded values** — maintaining a device-level context by merging the
+embedded contexts of every value ever observed satisfies this; advancing
+a context only by observed value hlcs does not.
+
 Reference: Almeida, Shapiro, Baquero, *Delta State Replicated Data
 Types*, JPDC 2018, §4.
 

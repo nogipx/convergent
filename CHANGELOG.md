@@ -22,6 +22,16 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
 
 ### Fixed
 
+- **`MvRegister.join` non-associativity without a transitive-context
+  invariant.** Dominance is judged per-value via each writer's embedded
+  `CausalContext`. If a write superseded value `w` but its context did not
+  transitively cover the values `w` itself superseded, join order could
+  change the survivor set. `set` now folds the context (and hlc) of every
+  value it supersedes into the stored context, making it transitively closed
+  by construction. `deltaSet` cannot see superseded values — its caller
+  invariant (the supplied context must already dominate all superseded
+  values' contexts) is now documented on the method and in the README.
+
 - **`Sequence.append` / `prepend` cold-hint poisoning.** On a cold (null)
   first/last-visible hint over a non-empty sequence, `append` recorded the
   just-appended tail as the first-visible hint (and `prepend` the mirror);

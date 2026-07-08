@@ -102,18 +102,38 @@ class MvRegister<T> implements Crdt<MvRegister<T>> {
   /// The new TaggedValue carries [writerContext] so that subsequent pure
   /// [join]s can drop values dominated by this write.
   MvRegister<T> set(T value, Hlc hlc, CausalContext writerContext) {
-    // Remove values that the writer has seen (causally dominated).
-    final surviving = _values
-        .where((v) => !writerContext.contains(v.hlc))
-        .toSet();
-    // Add the new value carrying its own context.
-    surviving.add(TaggedValue(value, hlc, context: writerContext));
+    // Fold the context of every value this write supersedes into the stored
+    // context. Dominance is judged per-value via the embedded context, so if
+    // the new write's context named a superseded value's hlc but not the
+    // (transitively) older values THAT value had itself superseded, join
+    // order could change the survivor set (join is only associative when
+    // dominance is transitively closed). Absorbing each superseded value's
+    // context (and its hlc) makes the stored context transitively closed by
+    // construction.
+    var ctx = writerContext;
+    final surviving = <TaggedValue<T>>{};
+    for (final v in _values) {
+      if (writerContext.contains(v.hlc)) {
+        ctx = ctx.merge(v.context).advance(v.hlc);
+      } else {
+        surviving.add(v);
+      }
+    }
+    surviving.add(TaggedValue(value, hlc, context: ctx));
     return MvRegister._(surviving);
   }
 
   /// Δ-state delta: a singleton register carrying the new write.
   /// Joining this into a peer's register has the same effect as
   /// calling `set(value, hlc, writerContext)` on the peer.
+  ///
+  /// Caller invariant: unlike [set], this cannot see the values it
+  /// supersedes, so the supplied [writerContext] must already dominate the
+  /// contexts of every value the write supersedes — not merely name their
+  /// hlcs. Maintaining a device-level context by merging the embedded
+  /// contexts of every value ever observed satisfies this; a context that
+  /// only advances by observed value hlcs does not, and joining the
+  /// resulting delta is no longer associative (see [set]).
   static MvRegister<T> deltaSet<T>(
     T value,
     Hlc hlc,
