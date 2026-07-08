@@ -445,8 +445,20 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
         changed = true;
         continue;
       }
-      // Both sides have it. OR-merge tombstone bit. Position metadata
-      // is identical across replicas that have observed the entry.
+      // Both sides have it. Position metadata is identical across replicas
+      // that observed the entry — the insert derives (parent, side, value)
+      // deterministically from the position, so the only way they can differ
+      // is a dot minted twice with different metadata (the same misuse the
+      // Fugue duplicate-dot guard catches). Taking one side silently would
+      // lock the divergence in and break commutativity; assert instead.
+      assert(
+        mine.parent == theirs.parent &&
+            mine.side == theirs.side &&
+            mine.value == theirs.value,
+        'Divergent metadata for dot $id: a dot was minted twice with '
+        'different (parent, side, value). Never reuse an Hlc across inserts.',
+      );
+      // OR-merge the tombstone bit.
       final tomb = mine.tombstoned || theirs.tombstoned;
       if (tomb == theirs.tombstoned) continue;
       merged[id] = theirs.withTombstone(tomb);

@@ -71,6 +71,14 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
   Decode now compares the recovered rune count to the stored count and
   throws `FormatException` on mismatch.
 
+- **`Sequence.join` divergent-metadata hardening.** On an id collision the
+  join OR-merged the tombstone bit but took one side's `(parent, side,
+  value)` blindly. If a dot was ever minted twice with different metadata
+  (the misuse `Fugue`'s duplicate-dot guard catches) the divergence was
+  silently locked in — and the join was not even commutative. `join` now
+  asserts (checked mode) that shared-dot metadata matches, symmetric to the
+  `Fugue` guard.
+
 - **`Fugue.insert` duplicate-dot hardening.** A local insert with an
   already-used dot (a replica restarted without seeding its clock from
   `Fugue.dots`, or two devices sharing a replica id) overwrote a block while

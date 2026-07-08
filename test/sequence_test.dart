@@ -687,6 +687,45 @@ void main() {
     });
   });
 
+  group('Sequence — join hardening', () {
+    test(
+      'join asserts on divergent metadata for the same dot (checked mode)',
+      () {
+        // Symmetric to the Fugue duplicate-dot guard: if a dot was minted twice
+        // with different (parent, side, value), join would silently take one
+        // side's metadata and lock the divergence in (it is not even
+        // commutative). Fail loudly in checked mode instead.
+        final id = Hlc(1, 0, 'A');
+        final s1 = Sequence<String>.fromRaw({
+          id: SeqEntry<String>(
+            id: id,
+            parent: null,
+            side: SequenceSide.right,
+            value: 'a',
+          ),
+        });
+        final s2 = Sequence<String>.fromRaw({
+          id: SeqEntry<String>(
+            id: id,
+            parent: null,
+            side: SequenceSide.right,
+            value: 'b',
+          ),
+        });
+        expect(() => s1.join(s2), throwsA(isA<AssertionError>()));
+      },
+    );
+
+    test('join does not assert when the shared dot has identical metadata', () {
+      final clk = clockOf('A');
+      final base = Sequence<String>.empty()
+          .insertAt(0, 'a', clk())
+          .insertAt(1, 'b', clk());
+      // Re-joining the same state shares every dot with identical metadata.
+      expect(base.join(base), base);
+    });
+  });
+
   group('Sequence — hint fast paths', () {
     test('prepend after append on a cold-hint sequence lands at index 0', () {
       final clk = clockOf('A');
