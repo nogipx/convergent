@@ -73,6 +73,23 @@ void main() {
       expect(reg.value, 199, reason: 'winner is the highest-HLC write');
     });
 
+    test('set() collapses concurrent writes so join laws hold', () {
+      // Two blind writes (empty writer context) are concurrent. Before the
+      // fix, set() left both in the inner MvRegister while join() collapsed to
+      // one, so a set-produced state was not a join fixpoint:
+      // a.join(a) != a and a.join(empty) != a (the .value stayed correct, but
+      // the advertised semilattice == laws were violated).
+      final a = LwwRegister<String>.empty()
+          .set('x', Hlc(100, 0, 'A'), const CausalContext.empty())
+          .set('y', Hlc(50, 0, 'B'), const CausalContext.empty());
+
+      expect(a.inner.values.length, 1, reason: 'single-value invariant');
+      expect(a.value, 'x', reason: 'winner is the highest HLC');
+      expect(a.join(a), a, reason: 'idempotency');
+      expect(a.join(a.empty), a, reason: 'identity');
+      expect(a.empty.join(a), a, reason: 'identity (mirror)');
+    });
+
     test('collapsed loser never resurfaces on a later join', () {
       final winner = LwwRegister.deltaSet(
         2,

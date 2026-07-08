@@ -54,6 +54,15 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
 
 ### Fixed
 
+- **`LwwRegister` broke join idempotency / identity.** `join` collapsed
+  concurrent survivors to the single winner (the 0.4.1 anti-bloat change) but
+  `set` did not, so a state produced by two blind `set`s (non-dominating
+  contexts) held ≥2 inner values while `join` reduced them to one — making it
+  not a join fixpoint: `a.join(a) != a` and `a.join(empty) != a` (the
+  observable `.value` stayed correct, but the advertised semilattice `==`
+  laws were violated, affecting any `==`-based change detection). `set` now
+  collapses too, so the register is single-valued on every path.
+
 - **`MvRegister.join` non-associativity without a transitive-context
   invariant.** Dominance is judged per-value via each writer's embedded
   `CausalContext`. If a write superseded value `w` but its context did not
