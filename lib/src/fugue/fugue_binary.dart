@@ -111,10 +111,22 @@ class FugueTextBinaryCodec {
         parent = Dot(parentCounter, parentReplica);
       }
       final text = utf8.decode(r.take(r.varint()));
-      r.varint(); // element count (elements recovered from runes)
+      final elementCount = r.varint();
       final values = <String>[
         for (final rune in text.runes) String.fromCharCode(rune),
       ];
+      // The run is recovered by rune-splitting, which only round-trips when
+      // every element was a single Unicode scalar (the codec's assumption).
+      // A multi-rune element (e.g. an emoji grapheme cluster) would split
+      // into several runes here, silently shifting every later element's dot.
+      // Cross-check against the stored count to fail loudly instead.
+      if (values.length != elementCount) {
+        throw FormatException(
+          'element count mismatch: block encoded $elementCount elements '
+          'but decoded ${values.length} runes — values must be single '
+          'Unicode scalars',
+        );
+      }
       final delCount = r.varint();
       final del = <int>[for (var j = 0; j < delCount * 2; j++) r.varint()];
       blocks.add((Dot(startCounter, startReplica), parent, side, values, del));

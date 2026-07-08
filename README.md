@@ -26,7 +26,7 @@ any subset of their state is a valid delta. Nothing in this package
 is operation-based: there is no notion of "broadcasting an op" and
 no causal-delivery requirement on the transport.
 
-Version: `0.3.x` (pre-stable; minor versions may break API).
+Version: `0.6.0` (pre-stable; minor versions may break API).
 License: MIT.
 
 ---
@@ -459,8 +459,10 @@ final merged = f.join(other);                          // semilattice join
 final bytes  = const FugueTextBinaryCodec().encode(f); // compact bytes
 ```
 
-- **Non-interleaving** (the paper's Theorem 1): concurrent runs at the same
-  position never interleave — each stays a contiguous block.
+- **Strong list specification (paper Theorem 1) plus forward
+  non-interleaving (§5)**; backward interleaving is avoided except in the
+  paper's provably-inevitable multi-writer cases (FugueMax territory).
+  Concurrent runs at the same position stay contiguous blocks.
 - **State-based + delta**: `join` is commutative / associative / idempotent;
   `applyOps` returns a δ-fragment such that `base.join(δ)` reconstructs the
   applied state.

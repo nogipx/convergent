@@ -26,6 +26,19 @@ void main() {
     expect(back.blockCount, f.blockCount);
   });
 
+  test('decode throws on a multi-rune element (single-scalar assumption)', () {
+    // The codec assumes each element is one Unicode scalar and recovers the
+    // run by rune-splitting. A multi-rune grapheme cluster stored as one
+    // element would split into several runes on decode, shifting every later
+    // dot. The stored element count catches it: encode writes 1, decode sees
+    // many runes -> FormatException instead of silent corruption.
+    final clk = LamportClock('A');
+    final f = Fugue<String>();
+    f.insert(0, '👨‍👩‍👧', clk.tick()); // one element, several runes
+    final bytes = bin.encode(f);
+    expect(() => bin.decode(bytes), throwsFormatException);
+  });
+
   test('decode(encode(x)) == x over random states (fuzz)', () {
     for (var seed = 0; seed < 200; seed++) {
       final rng = Random(seed);

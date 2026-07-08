@@ -30,6 +30,11 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
 
 ### Documentation
 
+- **README Fugue property claim corrected.** "Non-interleaving (Theorem 1)"
+  was miscited — Theorem 1 is the strong list specification. Now stated as
+  strong list spec (Theorem 1) plus forward non-interleaving (§5). README
+  front-matter version synced to `0.6.0` (was `0.3.x`).
+
 - **`Fugue.prune` barrier requirement.** The doc now spells out the full
   caller invariant: because a tombstone still anchors positions and
   `rightOrigin` walks the tombstone-inclusive traversal, `stable` must also
@@ -49,6 +54,13 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
   by construction. `deltaSet` cannot see superseded values — its caller
   invariant (the supplied context must already dominate all superseded
   values' contexts) is now documented on the method and in the README.
+
+- **`FugueTextBinaryCodec` element-count check.** The per-block element
+  count was decoded and discarded. A block whose values were not all single
+  Unicode scalars (e.g. a multi-rune emoji grapheme cluster) rune-split into
+  a different length on decode, silently shifting every later element's dot.
+  Decode now compares the recovered rune count to the stored count and
+  throws `FormatException` on mismatch.
 
 - **`Fugue.insert` duplicate-dot hardening.** A local insert with an
   already-used dot (a replica restarted without seeding its clock from
@@ -98,8 +110,9 @@ to `Sequence`.
     not an HLC, which is what lets a run share consecutive counters and
     coalesce. `LamportClock.observe` gives edits causal dominance over observed
     content for free.
-  - **Non-interleaving** (the paper's central property, Theorem 1): concurrent
-    runs at the same position never interleave; guarded by a direct fuzz.
+  - **Non-interleaving** (the paper's §5 forward property; Theorem 1 is the
+    strong list specification): concurrent runs at the same position never
+    interleave; guarded by a direct fuzz.
   - **Delta-state**: `applyOps(ops, clock)` applies a batch locally and returns
     a δ-fragment such that `base.join(δ)` reconstructs the state.
   - **Pruning**: `prune(Set<Dot> stable)` drops fully-tombstoned, causally
