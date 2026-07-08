@@ -431,6 +431,16 @@ block. `LamportClock` mints dots; `observe` folds observed counters in so a
 fresh edit causally dominates the content it edits (no separate skew-witness
 step needed).
 
+**Clock seeding on restart.** A `LamportClock` is in-memory state; the dots
+it has already minted live in the persisted `Fugue`. On restart (or when
+loading a decoded document) you must resume the clock past the highest
+counter this replica already used, or it re-mints a dot in use and corrupts
+the tree — `insert` asserts on the duplicate rather than silently
+overwriting. Seed with `LamportClock(replica, maxOwnCounter)`, or
+`LamportClock(replica)..observeAll(f.dots)`. Never share one `replica` id
+across two devices: they would mint colliding dots with no clock to
+reconcile them.
+
 ```dart
 final clk = LamportClock(deviceId);
 final f = Fugue<String>();

@@ -50,6 +50,15 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
   invariant (the supplied context must already dominate all superseded
   values' contexts) is now documented on the method and in the README.
 
+- **`Fugue.insert` duplicate-dot hardening.** A local insert with an
+  already-used dot (a replica restarted without seeding its clock from
+  `Fugue.dots`, or two devices sharing a replica id) overwrote a block while
+  the stale block object stayed referenced from the children index —
+  corrupted traversal, silent data loss. `_index` now asserts (checked mode)
+  when a dot already indexes a block. The assert cannot fire on legitimate
+  paths (merge only indexes behind a `mine == null` check; codecs build fresh
+  instances). README documents the clock-seeding ritual for restart.
+
 - **`Sequence.append` / `prepend` cold-hint poisoning.** On a cold (null)
   first/last-visible hint over a non-empty sequence, `append` recorded the
   just-appended tail as the first-visible hint (and `prepend` the mirror);

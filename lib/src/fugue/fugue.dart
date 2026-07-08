@@ -104,6 +104,12 @@ class Fugue<T> implements Crdt<Fugue<T>> {
   List<_Elem<T>>? _visibleCache;
 
   void _index(_Block<T> b) {
+    assert(
+      !_blocks.containsKey(b.start),
+      'Duplicate block start ${b.start}: a dot was minted twice. '
+      'Seed LamportClock from Fugue.dots on restart and never share a '
+      'replica id between devices.',
+    );
     _blocks[b.start] = b;
     (_children[b.parent] ??= <_Block<T>>[]).add(b);
     (_byReplica[b.start.replica] ??=

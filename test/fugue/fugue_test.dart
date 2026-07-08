@@ -53,6 +53,18 @@ void main() {
       f.delete(1);
       expect(f.values.join(), 'ac');
     });
+
+    test('inserting with a duplicated dot throws in checked mode', () {
+      // A replica that restarts without seeding its clock from Fugue.dots
+      // (or two devices sharing a replica id) can mint a dot already in use.
+      // That would overwrite a block while the stale object stays referenced
+      // from _children — corrupted traversal, silent data loss. The _index
+      // guard turns it into a loud AssertionError instead.
+      final f = Fugue<String>();
+      final d = Dot(1, 'A');
+      f.insert(0, 'a', d);
+      expect(() => f.insert(1, 'b', d), throwsA(isA<AssertionError>()));
+    });
   });
 
   // Drives an identical (op, dot) stream into both implementations.
