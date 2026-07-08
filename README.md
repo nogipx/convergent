@@ -164,9 +164,11 @@ value type to expose all three returning the same type.
   - **Idempotent:** `a.join(a) == a`.
 - `empty` — identity element. `a.join(empty) == a` for every `a`.
 - `deltaCompose` — **in-replica** composition of two
-  locally-produced Δ-state fragments before shipping. For most
-  types this coincides with `join`; `PnCounter` overrides to sum
-  per-replica halves instead of taking max. `Mutator` uses
+  locally-produced Δ-state fragments before shipping. For every type
+  in this package it coincides with `join`; the hook exists for a
+  hypothetical type whose cross-replica join filters (tombstone
+  semantics, max-reduction) in a way that would be wrong when
+  accumulating one replica's own successive deltas. `Mutator` uses
   `deltaCompose` for its pending-delta accumulator.
 
 These properties give the convergence guarantee independent of the
@@ -353,6 +355,10 @@ class PnCounter implements Crdt<PnCounter> {
   PnCounter decrement(Hlc by, [int delta = 1]);
   PnCounter join(PnCounter other);   // per-key max of both halves
 
+  // Δ-state delta producers — carry this replica's POST-mutation total.
+  PnCounter deltaIncrement(Hlc by, [int delta = 1]);
+  PnCounter deltaDecrement(Hlc by, [int delta = 1]);
+
   int get value;                      // Σ positive − Σ negative
 }
 ```
@@ -362,8 +368,17 @@ class PnCounter implements Crdt<PnCounter> {
 Per-replica halves only ever grow, so per-key `max` is the correct
 join. Idempotent on duplicate delivery: the same `(nodeId, positive,
 negative)` triple gives the same max. Classical CvRDT (Shapiro et
-al. 2011, §3.1); a Δ-state delta is just the single-replica entry
-that changed.
+al. 2011, §3.1).
+
+A Δ-state delta must be a **join-inflation** of the post-mutation
+state, so `deltaIncrement` / `deltaDecrement` are **instance methods**
+that carry this replica's post-mutation total `(positive, negative)` —
+not the raw amount. A raw `{node: (n, 0)}` fragment is not an
+inflation: two of them max-merge and one is silently dropped (and
+`Mutator.applyLocal`, which does `state.join(delta)`, would then
+diverge from a peer that received the summed accumulator). Because
+each fragment is a post-total, in-replica `deltaCompose` coincides
+with `join`.
 
 ---
 

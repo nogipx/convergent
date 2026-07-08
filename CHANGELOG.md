@@ -1,3 +1,37 @@
+## 0.6.0
+
+Correctness fixes from the 0.5.0 audit. One change is **breaking**
+(`PnCounter` delta producers move from static to instance methods).
+
+### Changed (breaking)
+
+- **`PnCounter.deltaIncrement` / `deltaDecrement` are now instance methods**
+  and carry this replica's **post-mutation total** `(positive, negative)`,
+  not the raw amount. A Δ-state delta must be a join-inflation of the
+  post-mutation state; the old static `{node: (n, 0)}` fragment was not one.
+  Because cross-replica `join` is per-entry max, two successive raw
+  increments max-merged and silently dropped one
+  (`empty.join(deltaIncrement(a,1)).join(deltaIncrement(a,1))` gave 1, not
+  2), and since `Mutator.applyLocal` does `state.join(delta)`, the local
+  replica diverged from peers that received the (correctly summed) flushed
+  accumulator. `PnCounter.deltaCompose` now delegates to `join` — post-total
+  fragments compose by max, so the previous sum-based override would
+  double-count. Migration: replace `PnCounter.deltaIncrement(hlc, n)` with
+  `counter.deltaIncrement(hlc, n)`, producing each delta against the counter
+  state it applies to.
+
+### Fixed
+
+- **`Sequence.append` / `prepend` cold-hint poisoning.** On a cold (null)
+  first/last-visible hint over a non-empty sequence, `append` recorded the
+  just-appended tail as the first-visible hint (and `prepend` the mirror);
+  a subsequent `prepend`/`append` then attached to the wrong edge, so the
+  element landed near the tail instead of index 0 (or at index 1 instead of
+  the tail). Every constructor except `append`/`prepend` yields null hints,
+  so the poisoning was reachable from normal code. Convergence was
+  unaffected; local visible placement (strong list spec condition (b)) is
+  restored. Only an insert into an EMPTY sequence now defines both edges.
+
 ## 0.5.0
 
 New `Fugue` list CRDT — the optimised, academically-faithful implementation

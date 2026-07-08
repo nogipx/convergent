@@ -45,5 +45,25 @@ void main() {
       final c = PnCounter.empty().increment(a, 5);
       expect(c.decrement(a, 0), c);
     });
+
+    test('two successive delta-increments both count (join into state)', () {
+      final a = Hlc(1, 0, 'A');
+      var s = PnCounter.empty();
+      final d1 = s.deltaIncrement(a, 1);
+      s = s.join(d1);
+      final d2 = s.deltaIncrement(a, 1);
+      s = s.join(d2);
+      expect(s.value, 2); // static-delta code yields 1
+    });
+
+    test('Mutator + PnCounter: local state equals what peers reconstruct', () {
+      final a = Hlc(1, 0, 'A');
+      final alice = Mutator<PnCounter>(initial: PnCounter.empty());
+      alice.applyLocal(alice.state.deltaIncrement(a, 1));
+      alice.applyLocal(alice.state.deltaIncrement(a, 1));
+      final bob = PnCounter.empty().join(alice.flushDelta());
+      expect(alice.state.value, 2);
+      expect(bob.value, alice.state.value);
+    });
   });
 }

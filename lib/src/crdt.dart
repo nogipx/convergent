@@ -13,10 +13,11 @@
 ///   bottom). `a.join(empty) == a` for every `a`. Used as the seed
 ///   for delta accumulators and as the "nothing to ship" sentinel.
 /// - [deltaCompose] — combines two **locally-produced** Δ-state
-///   fragments from the same replica before shipping. For most
-///   types this coincides with [join]; only types whose
-///   cross-replica join applies tombstone-style filtering or
-///   max-reduction (notably `OrSet` and `PnCounter`) override.
+///   fragments from the same replica before shipping. For every CRDT
+///   in this package it coincides with [join]; the hook exists for a
+///   hypothetical type whose cross-replica join applies tombstone-style
+///   filtering or max-reduction that must not apply when accumulating a
+///   single replica's own successive deltas.
 ///
 /// `Self extends Crdt<Self>` is F-bounded polymorphism: it lets
 /// generic containers (notably `CrdtMap<K, V>`) require their value

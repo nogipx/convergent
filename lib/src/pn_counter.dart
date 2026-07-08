@@ -63,13 +63,37 @@ class PnCounter implements Crdt<PnCounter> {
     );
   }
 
-  /// Δ-state delta carrying the single-replica increment.
-  static PnCounter deltaIncrement(Hlc by, [int delta = 1]) =>
-      PnCounter._(Map.unmodifiable({by.nodeId: (delta, 0)}));
+  /// Δ-state delta for a local increment: carries this replica's
+  /// POST-increment `(positive, negative)` pair, so that joining it into
+  /// any state that already reflects this replica's history is a proper
+  /// join-inflation (join is per-entry max).
+  ///
+  /// A raw `{node: (delta, 0)}` fragment is NOT an inflation — two
+  /// successive raw increments both carry `(1, 0)` and max-merge to `1`,
+  /// silently dropping one. Snapshotting the post-increment total makes
+  /// repeated in-replica composition (and `Mutator.applyLocal`, which does
+  /// `state.join(delta)`) accumulate correctly under max.
+  PnCounter deltaIncrement(Hlc by, [int delta = 1]) {
+    assert(
+      delta >= 0,
+      'PN-Counter deltas must be non-negative; use the opposite operation to decrease.',
+    );
+    final cur = _state[by.nodeId] ?? (0, 0);
+    return PnCounter._(Map.unmodifiable({by.nodeId: (cur.$1 + delta, cur.$2)}));
+  }
 
-  /// Δ-state delta carrying the single-replica decrement.
-  static PnCounter deltaDecrement(Hlc by, [int delta = 1]) =>
-      PnCounter._(Map.unmodifiable({by.nodeId: (0, delta)}));
+  /// Δ-state delta for a local decrement: carries this replica's
+  /// POST-decrement `(positive, negative)` pair. See [deltaIncrement] for
+  /// why the post-mutation snapshot (not the raw amount) is the
+  /// join-inflation fragment.
+  PnCounter deltaDecrement(Hlc by, [int delta = 1]) {
+    assert(
+      delta >= 0,
+      'PN-Counter deltas must be non-negative; use the opposite operation to decrease.',
+    );
+    final cur = _state[by.nodeId] ?? (0, 0);
+    return PnCounter._(Map.unmodifiable({by.nodeId: (cur.$1, cur.$2 + delta)}));
+  }
 
   @override
   PnCounter get empty => PnCounter.empty();
@@ -86,26 +110,14 @@ class PnCounter implements Crdt<PnCounter> {
     return PnCounter._(Map.unmodifiable(merged));
   }
 
-  /// **Within-replica delta composition.** Per-replica halves are
-  /// summed rather than max-reduced.
-  ///
-  /// Cross-replica [join] takes per-key max because every replica
-  /// only ever grows its own halves monotonically, so the max is
-  /// the converged truth. **Within** a replica, two sequential
-  /// `deltaIncrement`s carry independent increments — composing
-  /// them via max would silently drop one. [deltaCompose] sums
-  /// instead so accumulated local deltas ship the right total.
+  /// In-replica composition coincides with [join]. Each [deltaIncrement] /
+  /// [deltaDecrement] fragment already carries the replica's POST-mutation
+  /// per-replica total, so two fragments compose by per-entry MAX — the
+  /// later (larger) total subsumes the earlier. Summing them, as an earlier
+  /// version did with raw increments, double-counts the shared history that
+  /// is baked into both post-mutation snapshots.
   @override
-  PnCounter deltaCompose(PnCounter other) {
-    final keys = {..._state.keys, ...other._state.keys};
-    final merged = <String, (int, int)>{};
-    for (final k in keys) {
-      final a = _state[k] ?? (0, 0);
-      final b = other._state[k] ?? (0, 0);
-      merged[k] = (a.$1 + b.$1, a.$2 + b.$2);
-    }
-    return PnCounter._(Map.unmodifiable(merged));
-  }
+  PnCounter deltaCompose(PnCounter other) => join(other);
 
   @override
   bool operator ==(Object other) {
