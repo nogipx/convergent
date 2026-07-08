@@ -55,6 +55,15 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
   invariant (the supplied context must already dominate all superseded
   values' contexts) is now documented on the method and in the README.
 
+- **`Fugue` had no value `==` / `hashCode`.** It fell back to identity
+  equality, so `Mutator<Fugue>.hasPendingDelta` (which tests the accumulator
+  against `state.empty`, two distinct instances) was always `true` — any code
+  gating sends on it shipped empty deltas forever — and `CrdtMap<K, Fugue>`
+  compared by identity, inconsistent with every HLC-based type. Added
+  structural equality over the Δ-state (blocks by start dot; placement, run
+  values, and tombstone set), so `join` is value-idempotent and converged
+  replicas compare equal.
+
 - **`FugueTextBinaryCodec` element-count check.** The per-block element
   count was decoded and discarded. A block whose values were not all single
   Unicode scalars (e.g. a multi-rune emoji grapheme cluster) rune-split into

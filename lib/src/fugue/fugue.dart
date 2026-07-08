@@ -693,4 +693,52 @@ class Fugue<T> implements Crdt<Fugue<T>> {
       }
     }
   }
+
+  /// Structural (value) equality over the whole Δ-state: same blocks keyed by
+  /// start dot, each with equal placement (parent, side), run values, and
+  /// tombstone set. Two replicas that have converged compare equal, so
+  /// `join` is a value-idempotent semilattice op and `Mutator.hasPendingDelta`
+  /// / `CrdtMap<K, Fugue>` behave consistently with the HLC-based types (which
+  /// all define value equality). Block insertion order is irrelevant.
+  @override
+  bool operator ==(Object other) {
+    if (other is! Fugue<T>) return false;
+    if (_blocks.length != other._blocks.length) return false;
+    for (final entry in _blocks.entries) {
+      final mine = entry.value;
+      final theirs = other._blocks[entry.key];
+      if (theirs == null) return false;
+      if (mine.parent != theirs.parent ||
+          mine.side != theirs.side ||
+          mine.length != theirs.length) {
+        return false;
+      }
+      for (var i = 0; i < mine.length; i++) {
+        if (mine.values[i] != theirs.values[i]) return false;
+      }
+      if (mine.deleted.length != theirs.deleted.length ||
+          !mine.deleted.containsAll(theirs.deleted)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode {
+    // Order-independent over blocks (XOR); per block, values are ordered and
+    // the deleted offsets are an unordered set.
+    var h = 0;
+    for (final entry in _blocks.entries) {
+      final b = entry.value;
+      h ^= Object.hash(
+        entry.key,
+        b.parent,
+        b.side,
+        Object.hashAll(b.values),
+        Object.hashAllUnordered(b.deleted),
+      );
+    }
+    return h;
+  }
 }
