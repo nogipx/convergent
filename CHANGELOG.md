@@ -69,6 +69,13 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
   unaffected; local visible placement (strong list spec condition (b)) is
   restored. Only an insert into an EMPTY sequence now defines both edges.
 
+### Tests
+
+- Fugue δ-fragment **delivery-order** property test: fragments delivered
+  out of order, duplicated, and permuted must converge to the full-state
+  join, with a deterministic child-before-parent case asserting the child
+  is hidden (`orphanBlockCount > 0`) until its parent arrives.
+
 ## 0.5.0
 
 New `Fugue` list CRDT — the optimised, academically-faithful implementation
