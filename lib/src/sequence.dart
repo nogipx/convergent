@@ -267,10 +267,13 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
     return Sequence<T>._(
       next,
       lastVisibleHint: newEntry,
-      // Prepend hint is invalidated only when prepending onto an empty
-      // sequence — appending into a sequence with an existing first
-      // visible doesn't change the head.
-      firstVisibleHint: _firstVisibleHint ?? newEntry,
+      // Propagate the existing head hint; only an insert into an EMPTY
+      // sequence defines both edges. `_chars` is `this`'s pre-mutation map
+      // (copied into `next` above), so its emptiness reflects the state
+      // before this append. If we adopted `newEntry` as the head hint on a
+      // non-empty sequence we would record the just-appended TAIL as the
+      // first-visible entry, and a subsequent prepend would misplace.
+      firstVisibleHint: _chars.isEmpty ? newEntry : _firstVisibleHint,
     );
   }
 
@@ -291,7 +294,12 @@ class Sequence<T> implements Crdt<Sequence<T>>, Pruneable<Sequence<T>> {
     return Sequence<T>._(
       next,
       firstVisibleHint: newEntry,
-      lastVisibleHint: _lastVisibleHint ?? newEntry,
+      // Propagate the existing tail hint; only an insert into an EMPTY
+      // sequence defines both edges (`_chars` is the pre-mutation map).
+      // Adopting `newEntry` as the tail on a non-empty sequence would record
+      // the just-prepended HEAD as the last-visible entry and a subsequent
+      // append would misplace.
+      lastVisibleHint: _chars.isEmpty ? newEntry : _lastVisibleHint,
     );
   }
 

@@ -687,6 +687,67 @@ void main() {
     });
   });
 
+  group('Sequence — hint fast paths', () {
+    test('prepend after append on a cold-hint sequence lands at index 0', () {
+      final clk = clockOf('A');
+      // insertAt produces a Sequence with NULL hints — this is the cold start.
+      var s = Sequence<String>.empty()
+          .insertAt(0, 'a', clk())
+          .insertAt(1, 'b', clk());
+      s = s.append('c', clk()); // must not poison firstVisibleHint
+      s = s.prepend('d', clk());
+      expect(s.values, [
+        'd',
+        'a',
+        'b',
+        'c',
+      ]); // buggy code yields ['a','b','d','c']
+    });
+
+    test('append after prepend on a cold-hint sequence lands at the tail', () {
+      final clk = clockOf('A');
+      var s = Sequence<String>.empty()
+          .insertAt(0, 'a', clk())
+          .insertAt(1, 'b', clk());
+      s = s.prepend('z', clk()); // must not poison lastVisibleHint
+      s = s.append('w', clk());
+      expect(s.values, [
+        'z',
+        'a',
+        'b',
+        'w',
+      ]); // buggy code yields ['z','w','a','b']
+    });
+
+    test('fast-path hints match slow path from a cold start (fuzz)', () {
+      for (var seed = 0; seed < 100; seed++) {
+        final rng = Random(seed);
+        final clk = clockOf('A');
+        // Cold start: build a base via insertAt (null hints), then random
+        // append/prepend mix compared against the insertAt slow path.
+        var slow = Sequence<String>.empty();
+        var fast = Sequence<String>.empty();
+        for (var i = 0; i < 3 + rng.nextInt(4); i++) {
+          final d = clk();
+          slow = slow.insertAt(slow.length, 'b$i', d);
+          fast = fast.insertAt(fast.length, 'b$i', d);
+        }
+        for (var i = 0; i < 30; i++) {
+          final d = clk();
+          if (rng.nextBool()) {
+            slow = slow.insertAt(slow.length, 'x$i', d);
+            fast = fast.append('x$i', d);
+          } else {
+            slow = slow.insertAt(0, 'x$i', d);
+            fast = fast.prepend('x$i', d);
+          }
+        }
+        expect(fast.values, slow.values, reason: 'seed=$seed');
+        expect(fast, slow, reason: 'seed=$seed');
+      }
+    });
+  });
+
   group('Sequence — realistic-size sanity', () {
     test('10k-character session round-trips through codec', () {
       const codec = SequenceCodec<String>(StringCodec());
