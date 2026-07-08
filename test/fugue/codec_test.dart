@@ -94,6 +94,15 @@ void main() {
       }
     });
 
+    test('encode row order is canonical across join order', () {
+      final a = Fugue<String>()..insert(0, 'a', LamportClock('A').tick());
+      final b = Fugue<String>()..insert(0, 'b', LamportClock('B').tick());
+      final xy = a.join(b);
+      final yx = b.join(a);
+      expect(xy.values, yx.values);
+      expect(jsonEncode(xy.encode((s) => s)), jsonEncode(yx.encode((s) => s)));
+    });
+
     test('FugueCodec<T>(Codec<T>) round-trips via the element codec', () {
       const codec = FugueCodec<String>(StringCodec());
       final clk = LamportClock('A');

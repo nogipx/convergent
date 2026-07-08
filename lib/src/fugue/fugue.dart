@@ -595,7 +595,12 @@ class Fugue<T> implements Crdt<Fugue<T>> {
   /// value to a JSON-compatible form.
   Object encode(Object? Function(T) encodeValue) {
     final rows = <Object?>[];
-    for (final b in _blocks.values) {
+    // Emit blocks in start-dot order so the encoding is canonical: the same
+    // converged state produces identical output regardless of the block
+    // insertion order (enables content-hashing / dedup of snapshots).
+    final ordered = _blocks.values.toList()
+      ..sort((x, y) => x.start.compareTo(y.start));
+    for (final b in ordered) {
       rows.add(<Object?>[
         b.start.counter,
         b.start.replica,
@@ -660,7 +665,11 @@ class Fugue<T> implements Crdt<Fugue<T>> {
   /// deletedRanges)`, where `deletedRanges` is a flat `[start, len, …]` list.
   /// The [values] list must not be mutated.
   Iterable<(Dot, Dot, Side, List<T>, List<int>)> get rawBlocks sync* {
-    for (final b in _blocks.values) {
+    // Start-dot order so consumers (e.g. the binary codec) emit canonical,
+    // insertion-order-independent bytes.
+    final ordered = _blocks.values.toList()
+      ..sort((x, y) => x.start.compareTo(y.start));
+    for (final b in ordered) {
       yield (b.start, b.parent, b.side, b.values, _encodeDeleted(b.deleted));
     }
   }

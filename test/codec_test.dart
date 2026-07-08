@@ -187,6 +187,20 @@ void main() {
       final nodes = encoded['n'] as List;
       expect(nodes, ['A']);
     });
+
+    test('encode is canonical across join order (deterministic bytes)', () {
+      const codec = SequenceCodec<String>(StringCodec());
+      final aDot = Hlc(1000, 1, 'A');
+      final bDot = Hlc(1000, 1, 'B');
+      final sa = Sequence<String>.empty().insertAt(0, 'a', aDot);
+      final sb = Sequence<String>.empty().insertAt(0, 'b', bDot);
+      // Same converged state, reached in two join orders -> the _chars map
+      // iterates in different order. Encoding must still be byte-identical.
+      final xy = sa.join(sb);
+      final yx = sb.join(sa);
+      expect(xy.values, yx.values);
+      expect(jsonEncode(codec.encode(xy)), jsonEncode(codec.encode(yx)));
+    });
   });
 
   group('CrdtMapCodec', () {

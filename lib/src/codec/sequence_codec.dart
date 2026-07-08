@@ -61,7 +61,12 @@ class SequenceCodec<T> implements Codec<Sequence<T>> {
 
   @override
   Object? encode(Sequence<T> value) {
-    final entries = value.entries.values;
+    // Emit entries in id order so the encoding is canonical: the same
+    // converged state produces identical bytes regardless of the entry-map
+    // iteration order (enables content-hashing / dedup of snapshots). The
+    // node-id dictionary, built during this pass, is deterministic as a result.
+    final entries = value.entries.values.toList()
+      ..sort((x, y) => x.id.compareTo(y.id));
     // Build the node-id dictionary in observation order (deterministic
     // for the same input). Both the entry's own dot and its parent
     // contribute, since either can introduce a new node.

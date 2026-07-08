@@ -28,6 +28,15 @@ Correctness fixes from the 0.5.0 audit. One change is **breaking**
   `counter.deltaIncrement(hlc, n)`, producing each delta against the counter
   state it applies to.
 
+### Changed
+
+- **Canonical encoding.** `Fugue.encode`, `Fugue.rawBlocks` (hence
+  `FugueTextBinaryCodec`), and `SequenceCodec.encode` now emit blocks /
+  entries in start-dot / id order instead of map-iteration order. The
+  decoded value is unchanged, but the same converged state now serialises to
+  byte-identical output on every replica — enabling content-hashing and
+  snapshot dedup. O(N log N) at encode only.
+
 ### Documentation
 
 - **README Fugue property claim corrected.** "Non-interleaving (Theorem 1)"

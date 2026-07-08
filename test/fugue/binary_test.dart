@@ -26,6 +26,18 @@ void main() {
     expect(back.blockCount, f.blockCount);
   });
 
+  test('encode is canonical: converged states encode byte-identically', () {
+    final a = Fugue<String>()..insert(0, 'a', LamportClock('A').tick());
+    final b = Fugue<String>()..insert(0, 'b', LamportClock('B').tick());
+    // Same converged state via two join orders -> different block insertion
+    // order in the map. Canonical encode (blocks sorted by start dot) makes
+    // the bytes identical, enabling content-hash / dedup of snapshots.
+    final xy = a.join(b);
+    final yx = b.join(a);
+    expect(xy.values, yx.values);
+    expect(bin.encode(xy), bin.encode(yx));
+  });
+
   test('decode throws on a multi-rune element (single-scalar assumption)', () {
     // The codec assumes each element is one Unicode scalar and recovers the
     // run by rune-splitting. A multi-rune grapheme cluster stored as one
